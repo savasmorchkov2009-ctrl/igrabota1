@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация бота
-TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_IT  # Замените на ваш токен
+TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_IT"  # Замените на ваш токен
 ADMINS = [5189651311, 5887846215]  # ID администраторов
 DATABASE_NAME = "racing_bot.db"
 
@@ -2256,3 +2256,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
