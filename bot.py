@@ -37,8 +37,8 @@ DATABASE_NAME = "racing_bot.db"
     EUROPEAN_MARKET, ASIAN_MARKET, AMERICAN_MARKET,
     PARTS_SHOP, ENGINES, TURBOS, EXHAUSTS, RADIATORS,
     NITROUS, SHOCK_ABSORBERS, TIRES, DUEL, WAITING_DUEL,
-    PROFILE
-) = range(22)
+    PROFILE, INSTALL_PARTS
+) = range(23)
 
 # Класс для работы с базой данных
 class Database:
@@ -217,7 +217,7 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', training_cars)
         
-        # Добавление европейских машин
+        # Добавление европейских машин (сокращенный список)
         european_cars = [
             ("Volkswagen", "Golf", "european", 150, 8.2, 210, 25000, "vw_golf.jpg"),
             ("Volkswagen", "Passat", "european", 190, 7.5, 235, 35000, "vw_passat.jpg"),
@@ -231,14 +231,6 @@ class Database:
             ("Porsche", "Macan", "european", 265, 6.2, 232, 65000, "porsche_macan.jpg"),
             ("Opel", "Insignia", "european", 170, 8.9, 220, 30000, "opel_insignia_std.jpg"),
             ("Ferrari", "Roma", "european", 620, 3.4, 320, 250000, "ferrari_roma.jpg"),
-            ("Ferrari", "F8 Tributo", "european", 720, 2.9, 340, 300000, "ferrari_f8.jpg"),
-            ("Lamborghini", "Huracán", "european", 640, 3.2, 325, 280000, "lambo_huracan.jpg"),
-            ("Lamborghini", "Aventador", "european", 770, 2.9, 350, 400000, "lambo_aventador.jpg"),
-            ("Bugatti", "Chiron", "european", 1500, 2.4, 420, 3000000, "bugatti_chiron.jpg"),
-            ("Rolls-Royce", "Cullinan", "european", 571, 5.2, 250, 350000, "rr_cullinan.jpg"),
-            ("Bentley", "Flying Spur", "european", 635, 3.8, 333, 220000, "bentley_spur.jpg"),
-            ("McLaren", "720S", "european", 720, 2.9, 341, 300000, "mclaren_720s.jpg"),
-            ("McLaren", "Artura", "european", 680, 3.0, 330, 225000, "mclaren_artura.jpg"),
         ]
         
         cursor.executemany('''
@@ -259,8 +251,6 @@ class Database:
             ("Subaru", "Impreza WRX STI", "asian", 310, 5.2, 250, 40000, "subaru_sti.jpg"),
             ("Mitsubishi", "Lancer Evolution X", "asian", 303, 5.1, 250, 45000, "mitsubishi_evo.jpg"),
             ("Lexus", "LC 500", "asian", 477, 4.4, 270, 95000, "lexus_lc.jpg"),
-            ("Hyundai", "i30 N", "asian", 280, 6.1, 250, 35000, "hyundai_i30n.jpg"),
-            ("Kia", "Stinger", "asian", 370, 4.7, 270, 50000, "kia_stinger.jpg"),
         ]
         
         cursor.executemany('''
@@ -279,8 +269,6 @@ class Database:
             ("Cadillac", "Escalade", "american", 420, 6.1, 180, 90000, "cadillac_escalade.jpg"),
             ("Chevrolet", "Camaro SS", "american", 455, 4.0, 250, 40000, "chevrolet_camaro.jpg"),
             ("Ford", "F-150 Raptor", "american", 450, 5.1, 180, 75000, "ford_raptor.jpg"),
-            ("Dodge", "Charger SRT", "american", 485, 4.3, 265, 45000, "dodge_charger.jpg"),
-            ("Chevrolet", "Silverado", "american", 420, 5.9, 180, 50000, "chevrolet_silverado.jpg"),
         ]
         
         cursor.executemany('''
@@ -293,12 +281,9 @@ class Database:
         engines = [
             ("engines", "Volkswagen EA888 2.0 TSI", "2.0L турбированный двигатель", 40, -0.5, 15, 5000),
             ("engines", "BMW B58 3.0 TwinTurbo", "3.0L рядная шестерка с двойным турбо", 80, -1.2, 30, 12000),
-            ("engines", "Porsche Mezger 3.8", "Оппозитный 6-цилиндровый двигатель", 120, -1.5, 40, 25000),
             ("engines", "Toyota 2JZ-GTE", "Легендарный 3.0L I6 TwinTurbo", 150, -1.8, 50, 30000),
             ("engines", "Nissan RB26DETT", "2.6L I6 TwinTurbo от Skyline GT-R", 140, -1.7, 45, 28000),
             ("engines", "Chevrolet LS3 V8", "6.2L V8 двигатель", 130, -1.3, 35, 15000),
-            ("engines", "Ford Coyote V8 5.0", "5.0L V8 с 32 клапанами", 110, -1.1, 32, 14000),
-            ("engines", "Ferrari F136 V8", "4.3L V8 от Ferrari 458", 180, -2.0, 60, 45000),
         ]
         
         cursor.executemany('''
@@ -312,8 +297,6 @@ class Database:
             ("turbos", "Garrett GTX3582R", "Высокоэффективная турбина", 100, -0.8, 25, 8000),
             ("turbos", "BorgWarner EFR 8374", "Турбина с керамическими подшипниками", 120, -1.0, 30, 10000),
             ("turbos", "Mitsubishi TD05", "Надежная турбина для тюнинга", 60, -0.5, 15, 3000),
-            ("turbos", "Precision Turbo 6266", "Турбина для дрэг-рейсинга", 140, -1.2, 35, 12000),
-            ("turbos", "HKS GT2835", "Японская турбина для Street-тюнинга", 90, -0.7, 22, 7000),
         ]
         
         cursor.executemany('''
@@ -327,7 +310,6 @@ class Database:
             ("exhausts", "Akrapovič Evolution", "Титановая выхлопная система", 15, -0.2, 10, 4000),
             ("exhausts", "Remus PowerSound", "Спортивная выхлопная система", 10, -0.1, 8, 2000),
             ("exhausts", "HKS Hi-Power", "Японская выхлопная система", 12, -0.15, 9, 2500),
-            ("exhausts", "Borla Atak", "Американская выхлопная система", 18, -0.25, 12, 3500),
         ]
         
         cursor.executemany('''
@@ -1798,6 +1780,96 @@ async def tuning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return TUNING
 
+async def install_parts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    active_car = db.get_active_car(user_id)
+    
+    if not active_car:
+        await query.edit_message_text(
+            text="🚫 У вас нет активной машины!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚗 Гараж", callback_data="garage"),
+                InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+            ]])
+        )
+        return TUNING
+    
+    # Получаем запчасти пользователя
+    cursor = db.conn.cursor()
+    cursor.execute('''
+        SELECT p.*, up.car_id as installed
+        FROM user_parts up
+        JOIN parts p ON up.part_id = p.id
+        WHERE up.user_id = ? AND up.car_id IS NULL
+    ''', (user_id,))
+    available_parts = cursor.fetchall()
+    
+    if not available_parts:
+        await query.edit_message_text(
+            text="🚫 У вас нет доступных запчастей для установки!\n"
+                 "Купите запчасти в магазине.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🛒 Магазин запчастей", callback_data="parts_shop"),
+                InlineKeyboardButton("🔙 Назад", callback_data="tuning")
+            ]])
+        )
+        return INSTALL_PARTS
+    
+    parts_text = f"🛠 ДОСТУПНЫЕ ЗАПЧАСТИ ДЛЯ {active_car['brand']} {active_car['model']}:\n\n"
+    
+    keyboard = []
+    for part in available_parts:
+        parts_text += f"🔧 {part['name']}\n"
+        parts_text += f"   +{part['hp_boost']} л.с., {part['acceleration_boost']:.1f} сек, +{part['top_speed_boost']} км/ч\n"
+        
+        keyboard.append([
+            InlineKeyboardButton(
+                f"🔧 Установить {part['name']}",
+                callback_data=f"install_part_{part['id']}"
+            )
+        ])
+    
+    keyboard.append([
+        InlineKeyboardButton("🔙 Назад", callback_data="tuning"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+    ])
+    
+    await query.edit_message_text(
+        text=parts_text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return INSTALL_PARTS
+
+async def install_part(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    part_id = int(data.split("_")[2])
+    
+    active_car = db.get_active_car(user_id)
+    if not active_car:
+        return await tuning(update, context)
+    
+    # Устанавливаем запчасть
+    db.install_part(user_id, part_id, active_car["id"])
+    
+    await query.edit_message_text(
+        text="✅ Запчасть успешно установлена!\n"
+             "Характеристики вашей машины улучшены.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ Тюнинг", callback_data="tuning"),
+            InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+        ]])
+    )
+    
+    return TUNING
+
 async def top_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -2225,6 +2297,25 @@ async def skip_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return MAIN_MENU
 
+async def reject_duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    duel_id = int(data.split("_")[2])
+    
+    # Обновляем статус дуэли
+    db.update_duel_status(duel_id, "rejected")
+    
+    await query.edit_message_text(
+        text="❌ Вы отклонили вызов.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Назад", callback_data="duel")
+        ]])
+    )
+    
+    return DUEL
+
 # Админ команды
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2422,65 +2513,78 @@ def main():
                 CallbackQueryHandler(market_navigation, pattern="^market_"),
                 CallbackQueryHandler(buy_car, pattern="^buy_car_"),
                 CallbackQueryHandler(shop_menu, pattern="^shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             ASIAN_MARKET: [
                 CallbackQueryHandler(market_navigation, pattern="^market_"),
                 CallbackQueryHandler(buy_car, pattern="^buy_car_"),
                 CallbackQueryHandler(shop_menu, pattern="^shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             AMERICAN_MARKET: [
                 CallbackQueryHandler(market_navigation, pattern="^market_"),
                 CallbackQueryHandler(buy_car, pattern="^buy_car_"),
                 CallbackQueryHandler(shop_menu, pattern="^shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             PARTS_SHOP: [
                 CallbackQueryHandler(show_parts_category, pattern="^engines$|^turbos$|^exhausts$|^radiators$|^nitrous$|^shock_absorbers$|^tires$"),
                 CallbackQueryHandler(shop_menu, pattern="^shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             ENGINES: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             TURBOS: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             EXHAUSTS: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             RADIATORS: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             NITROUS: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             SHOCK_ABSORBERS: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             TIRES: [
                 CallbackQueryHandler(parts_navigation, pattern="^parts_"),
                 CallbackQueryHandler(buy_part, pattern="^buy_part_"),
                 CallbackQueryHandler(parts_shop, pattern="^parts_shop$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             DUEL: [
                 CallbackQueryHandler(challenge_player, pattern="^challenge_player$"),
                 CallbackQueryHandler(accept_duel, pattern="^accept_duel_"),
+                CallbackQueryHandler(reject_duel, pattern="^reject_duel_"),
                 CallbackQueryHandler(send_challenge, pattern="^challenge_"),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             WAITING_DUEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, search_player),
                 CallbackQueryHandler(duel_menu, pattern="^duel$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
             PROFILE: [
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
@@ -2491,10 +2595,17 @@ def main():
                 CallbackQueryHandler(shop_menu, pattern="^shop$"),
             ],
             TUNING: [
+                CallbackQueryHandler(install_parts, pattern="^install_parts$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+            ],
+            INSTALL_PARTS: [
+                CallbackQueryHandler(install_part, pattern="^install_part_"),
+                CallbackQueryHandler(tuning, pattern="^tuning$"),
                 CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
         },
         fallbacks=[CommandHandler("start", start)],
+        per_message=False
     )
     
     application.add_handler(conv_handler)
