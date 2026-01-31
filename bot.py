@@ -30,8 +30,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Замените на ваш токен
-ADMIN_ID = 123456789  # Ваш ID Telegram
+BOT_TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_ITw"  # Замените на ваш токен
+ADMIN_ID = 5189651311  # Ваш ID Telegram
 
 # Состояния диалога
 class States(Enum):
@@ -2416,3 +2416,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
