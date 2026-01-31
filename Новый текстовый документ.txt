@@ -1,4 +1,6 @@
 aiogram==3.0.0
-
+python-telegram-bot==20.7
+flask==2.3.3
+python-3.9.16
 
 
