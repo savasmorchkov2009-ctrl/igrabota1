@@ -1,1701 +1,1251 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import asyncio
 import logging
 import sqlite3
 import random
-import time
-import os
-import asyncio
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, 
-    ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
-)
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes, ConversationHandler
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telegram.constants import ParseMode
 
-# Настройка логгирования
+# ==================== КОНФИГУРАЦИЯ ====================
+BOT_TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_ITw"  # Замените на ваш токен
+ADMIN_IDS = [5189651311, 5887846215]  # ID администраторов
+PROMO_CODE = "RACING2024"  # Промокод (можно менять)
+PROMO_BONUS = 10000  # Бонус за промокод
+
+# Настройки игры
+INITIAL_BALANCE = 5000
+START_REACTION_MIN = 5.0  # Минимальное время реакции (сек)
+START_REACTION_MAX = 6.0  # Максимальное время реакции (сек)
+RACE_DISTANCE = 500  # Дистанция гонки в метрах
+RACE_REWARD_WIN = 1000  # Награда за победу
+RACE_REWARD_LOSS = 200  # Награда за поражение
+RATING_WIN = 10  # Рейтинг за победу
+RATING_LOSS = 5  # Рейтинг за поражение
+
+# Состояния для ConversationHandler
+CHOOSING_CAR, MAIN_MENU, BUYING_CAR, SHOP_MENU, TUNING_MENU, RACE_MENU, DUEL_MENU = range(7)
+
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация бота
-TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_ITw"  # ЗАМЕНИТЕ НА ВАШ ТОКЕН!
-ADMINS = [5189651311, 5887846215]  # ID администраторов
-DATABASE_NAME = "racing_bot.db"
+# ==================== МОДЕЛИ ДАННЫХ ====================
+@dataclass
+class Car:
+    id: int
+    name: str
+    brand: str
+    country: str
+    price: int
+    horsepower: int
+    acceleration_0_100: float
+    top_speed: int
+    photo_file_id: str = ""
+    description: str = ""
+    
+@dataclass
+class Player:
+    user_id: int
+    username: str
+    nickname: str
+    balance: int
+    rating: int
+    followers: int
+    wins: int
+    losses: int
+    current_car_id: int
+    created_at: str
+    
+@dataclass
+class Part:
+    id: int
+    name: str
+    type: str  # engine, turbo, tires, exhaust, radiator, nos, suspension
+    price: int
+    horsepower_boost: int
+    acceleration_boost: float
+    description: str
 
-# Состояния
-(
-    REGISTER_NAME, MAIN_MENU, CHOOSING_CAR, TRAINING, RACING, 
-    SHOP_MENU, GARAGE, TUNING, MARKET, EUROPEAN_MARKET, 
-    ASIAN_MARKET, AMERICAN_MARKET, PARTS_SHOP, ENGINES, TURBOS, 
-    EXHAUSTS, RADIATORS, NITROUS, SHOCK_ABSORBERS, TIRES, 
-    DUEL, WAITING_DUEL, PROFILE, INSTALL_PARTS, TOP_MENU, 
-    PROMOCODE, ASIAN_CARS, AMERICAN_CARS, EUROPEAN_CARS
-) = range(29)
-
-# Класс для работы с базой данных
+# ==================== БАЗА ДАННЫХ ====================
 class Database:
-    def __init__(self):
-        self.conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+    def __init__(self, db_name="racing_bot.db"):
+        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        self.cursor = self.conn.cursor()
         self.init_db()
     
     def init_db(self):
-        cursor = self.conn.cursor()
-        
-        # Таблица пользователей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
+        # Таблица игроков
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
-                nickname TEXT UNIQUE,
-                first_name TEXT,
-                last_name TEXT,
-                balance INTEGER DEFAULT 10000,
+                nickname TEXT,
+                balance INTEGER DEFAULT 5000,
                 rating INTEGER DEFAULT 1000,
                 followers INTEGER DEFAULT 0,
                 wins INTEGER DEFAULT 0,
                 losses INTEGER DEFAULT 0,
-                total_races INTEGER DEFAULT 0,
                 current_car_id INTEGER,
-                experience INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1,
-                last_race_time TIMESTAMP,
-                is_banned BOOLEAN DEFAULT FALSE,
-                registered_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tutorial_completed BOOLEAN DEFAULT FALSE,
+                promo_used BOOLEAN DEFAULT FALSE
             )
         ''')
         
-        # Таблица машин
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cars (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                brand TEXT,
-                model TEXT,
-                region TEXT,
-                base_hp INTEGER,
-                base_acceleration_0_100 REAL,
-                base_top_speed INTEGER,
-                price INTEGER,
-                image_name TEXT,
-                category TEXT DEFAULT 'regular'
-            )
-        ''')
-        
-        # Таблица автомобилей пользователя
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_cars (
+        # Таблица машин игрока
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_cars (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 car_id INTEGER,
-                bought_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT FALSE,
-                tuning_hp INTEGER DEFAULT 0,
-                tuning_acceleration REAL DEFAULT 0,
-                tuning_top_speed INTEGER DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users(user_id),
-                FOREIGN KEY (car_id) REFERENCES cars(id)
+                horsepower INTEGER,
+                acceleration_0_100 REAL,
+                FOREIGN KEY (user_id) REFERENCES players (user_id)
             )
         ''')
         
-        # Таблица промокодов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS promocodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT UNIQUE,
-                reward_type TEXT,
-                reward_value INTEGER,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица использованных промокодов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS used_promocodes (
+        # Таблица запчастей игрока
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_parts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                promocode_id INTEGER,
-                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id),
-                FOREIGN KEY (promocode_id) REFERENCES promocodes(id)
+                part_id INTEGER,
+                installed BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (user_id) REFERENCES players (user_id)
+            )
+        ''')
+        
+        # Таблица доступных машин
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cars (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                brand TEXT,
+                country TEXT,
+                price INTEGER,
+                horsepower INTEGER,
+                acceleration_0_100 REAL,
+                top_speed INTEGER,
+                photo_file_id TEXT,
+                description TEXT
+            )
+        ''')
+        
+        # Таблица запчастей
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS parts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                type TEXT,
+                price INTEGER,
+                horsepower_boost INTEGER,
+                acceleration_boost REAL,
+                description TEXT
+            )
+        ''')
+        
+        # Таблица дуэлей
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS duels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player1_id INTEGER,
+                player2_id INTEGER,
+                winner_id INTEGER,
+                bet_amount INTEGER,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP
             )
         ''')
         
         self.conn.commit()
-        self.init_data()
+        self.populate_default_data()
     
-    def init_data(self):
-        cursor = self.conn.cursor()
-        
-        # Проверяем, есть ли уже данные
-        cursor.execute("SELECT COUNT(*) as count FROM cars")
-        if cursor.fetchone()["count"] > 0:
-            return
-        
+    def populate_default_data(self):
         # Добавляем начальные машины для обучения
-        training_cars = [
-            ("Mitsubishi", "Lancer X Sportback", "asian", 168, 8.5, 210, 15000, "lancer_x.jpg"),
-            ("Opel", "Insignia OPC", "european", 280, 6.0, 250, 35000, "opel_insignia.jpg"),
-            ("Cadillac", "CTS", "american", 321, 5.6, 240, 45000, "cadillac_cts.jpg")
+        starter_cars = [
+            (1, "Lancer X Sportback", "Mitsubishi", "Japan", 0, 240, 6.1, 240, "", "Надежный спортсмен с отличной управляемостью"),
+            (2, "Opel Insignia OPC", "Opel", "Germany", 0, 325, 5.9, 250, "", "Немецкая мощь и комфорт"),
+            (3, "Cadillac CTS", "Cadillac", "USA", 0, 420, 5.2, 270, "", "Американская роскошь и сила")
         ]
         
-        cursor.executemany('''
-            INSERT INTO cars (brand, model, region, base_hp, base_acceleration_0_100, 
-                            base_top_speed, price, image_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', training_cars)
+        self.cursor.executemany('''
+            INSERT OR IGNORE INTO cars (id, name, brand, country, price, horsepower, acceleration_0_100, top_speed, photo_file_id, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', starter_cars)
         
-        # Добавляем больше машин для магазина
-        additional_cars = [
-            # Европейские
-            ("Volkswagen", "Golf GTI", "european", 245, 6.2, 250, 35000, "vw_golf.jpg"),
-            ("BMW", "M3", "european", 510, 3.9, 290, 75000, "bmw_m3.jpg"),
-            ("Mercedes", "C63 AMG", "european", 510, 3.9, 290, 80000, "merc_c63.jpg"),
-            ("Audi", "RS6", "european", 600, 3.6, 305, 110000, "audi_rs6.jpg"),
-            ("Porsche", "911 Turbo S", "european", 650, 2.7, 330, 220000, "porsche_911.jpg"),
-            ("Ferrari", "488 GTB", "european", 670, 3.0, 330, 280000, "ferrari_488.jpg"),
-            ("Lamborghini", "Huracan", "european", 640, 2.9, 325, 260000, "lambo_huracan.jpg"),
-            
-            # Азиатские
-            ("Toyota", "Supra MK5", "asian", 382, 4.1, 250, 55000, "toyota_supra.jpg"),
-            ("Nissan", "GT-R R35", "asian", 570, 2.9, 315, 115000, "nissan_gtr.jpg"),
-            ("Honda", "NSX", "asian", 573, 2.9, 307, 170000, "honda_nsx.jpg"),
-            ("Mazda", "RX-7", "asian", 280, 5.3, 250, 80000, "mazda_rx7.jpg"),
-            ("Subaru", "WRX STI", "asian", 310, 5.2, 250, 40000, "subaru_sti.jpg"),
-            ("Mitsubishi", "Lancer Evo X", "asian", 303, 5.1, 250, 45000, "mitsubishi_evo.jpg"),
-            ("Lexus", "LC 500", "asian", 477, 4.4, 270, 95000, "lexus_lc.jpg"),
-            
-            # Американские
-            ("Ford", "Mustang GT", "american", 460, 4.3, 250, 45000, "ford_mustang.jpg"),
-            ("Chevrolet", "Corvette Stingray", "american", 495, 3.0, 312, 65000, "chevrolet_corvette.jpg"),
-            ("Dodge", "Challenger Hellcat", "american", 717, 3.6, 315, 70000, "dodge_challenger.jpg"),
-            ("Tesla", "Model S Plaid", "american", 1020, 2.1, 322, 140000, "tesla_model_s.jpg"),
-            ("Jeep", "Wrangler Rubicon", "american", 285, 7.5, 180, 40000, "jeep_wrangler.jpg"),
-            ("Cadillac", "Escalade", "american", 420, 6.1, 180, 90000, "cadillac_escalade.jpg"),
-            ("Chevrolet", "Camaro ZL1", "american", 650, 3.5, 320, 65000, "chevrolet_camaro.jpg"),
+        # Добавляем европейские машины
+        european_cars = [
+            ("Volkswagen Golf", "Volkswagen", "Germany", 15000, 150, 8.2, 210, "", "Классика немецкого автопрома"),
+            ("Volkswagen Passat", "Volkswagen", "Germany", 20000, 190, 7.8, 230, "", "Просторный и комфортабельный"),
+            ("Mercedes-Benz C-Class", "Mercedes", "Germany", 35000, 255, 6.0, 250, "", "Роскошь и технологии"),
+            ("Mercedes-Benz E-Class", "Mercedes", "Germany", 45000, 299, 5.7, 250, "", "Бизнес-класс высшего уровня"),
+            ("BMW 5 Series", "BMW", "Germany", 40000, 249, 6.1, 250, "", "Водительское удовольствие"),
+            ("BMW X3", "BMW", "Germany", 42000, 184, 8.3, 210, "", "Спортивный кроссовер"),
+            ("Audi A6", "Audi", "Germany", 38000, 245, 6.1, 250, "", "Стиль и инновации"),
+            ("Audi Q7", "Audi", "Germany", 55000, 249, 6.9, 234, "", "Премиальный внедорожник"),
+            ("Porsche Panamera", "Porsche", "Germany", 85000, 330, 5.4, 270, "", "Спортивный седан"),
+            ("Porsche Macan", "Porsche", "Germany", 65000, 265, 6.1, 254, "", "Компактный кроссовер"),
+            ("Ferrari Roma", "Ferrari", "Italy", 250000, 620, 3.4, 320, "", "Итальянская элегантность"),
+            ("Ferrari F8 Tributo", "Ferrari", "Italy", 300000, 720, 2.9, 340, "", "Трибьут технологиям"),
+            ("Lamborghini Huracán", "Lamborghini", "Italy", 280000, 640, 2.9, 325, "", "Итальянский бык"),
+            ("Lamborghini Aventador", "Lamborghini", "Italy", 450000, 770, 2.9, 350, "", "Флагманский суперкар"),
+            ("Bugatti Chiron", "Bugatti", "France", 3000000, 1500, 2.4, 420, "", "Гиперкар легенда")
         ]
         
-        cursor.executemany('''
-            INSERT INTO cars (brand, model, region, base_hp, base_acceleration_0_100, 
-                            base_top_speed, price, image_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', additional_cars)
+        for car in european_cars:
+            self.cursor.execute('''
+                INSERT OR IGNORE INTO cars (name, brand, country, price, horsepower, acceleration_0_100, top_speed, photo_file_id, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', car)
         
-        # Добавляем промокоды
-        promocodes = [
-            ("WELCOME2024", "money", 5000),
-            ("RACINGBOT", "money", 3000),
-            ("SPEED", "money", 2000),
-            ("FOLLOWERS", "money", 1000),
-            ("RICH", "money", 10000),
+        # Добавляем азиатские машины
+        asian_cars = [
+            ("Toyota Supra", "Toyota", "Japan", 55000, 340, 4.1, 250, "", "Легенда возвращается"),
+            ("Nissan Skyline GT-R R34", "Nissan", "Japan", 120000, 280, 4.9, 250, "", "Культовый японец"),
+            ("Honda NSX", "Honda", "Japan", 160000, 581, 2.9, 308, "", "Японский суперкар"),
+            ("Mazda RX-7", "Mazda", "Japan", 45000, 280, 5.3, 250, "", "Роторный легенда"),
+            ("Subaru Impreza WRX STI", "Subaru", "Japan", 40000, 310, 5.2, 250, "", "Раллийный чемпион"),
+            ("Mitsubishi Lancer Evolution", "Mitsubishi", "Japan", 35000, 303, 4.8, 250, "", "Легендарный Эволюшн"),
+            ("Lexus LC", "Lexus", "Japan", 92000, 471, 4.4, 270, "", "Роскошный гран-туризмо"),
+            ("Hyundai Genesis Coupe", "Hyundai", "South Korea", 30000, 350, 5.3, 240, "", "Корейский спортсмен"),
+            ("Kia Stinger", "Kia", "South Korea", 35000, 370, 4.7, 270, "", "Спортивный лифтбек")
         ]
         
-        cursor.executemany('''
-            INSERT INTO promocodes (code, reward_type, reward_value)
-            VALUES (?, ?, ?)
-        ''', promocodes)
+        for car in asian_cars:
+            self.cursor.execute('''
+                INSERT OR IGNORE INTO cars (name, brand, country, price, horsepower, acceleration_0_100, top_speed, photo_file_id, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', car)
+        
+        # Добавляем американские машины
+        american_cars = [
+            ("Ford Mustang GT", "Ford", "USA", 35000, 450, 4.3, 250, "", "Американская икона"),
+            ("Chevrolet Corvette Stingray", "Chevrolet", "USA", 65000, 495, 2.9, 312, "", "Народный суперкар"),
+            ("Dodge Challenger Hellcat", "Dodge", "USA", 70000, 717, 3.6, 315, "", "Американский мускул"),
+            ("Tesla Model S Plaid", "Tesla", "USA", 130000, 1020, 2.1, 322, "", "Электрическая революция"),
+            ("Jeep Wrangler", "Jeep", "USA", 35000, 285, 7.5, 180, "", "Внедорожная легенда"),
+            ("Cadillac Escalade", "Cadillac", "USA", 85000, 420, 5.8, 180, "", "Премиальный внедорожник")
+        ]
+        
+        for car in american_cars:
+            self.cursor.execute('''
+                INSERT OR IGNORE INTO cars (name, brand, country, price, horsepower, acceleration_0_100, top_speed, photo_file_id, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', car)
+        
+        # Добавляем запчасти
+        parts = [
+            # Двигатели
+            ("Volkswagen EA888 2.0 TSI", "engine", 5000, 50, -0.3, "Мощный турбированный движок"),
+            ("Toyota 2JZ-GTE", "engine", 15000, 150, -0.8, "Легендарный японский двигатель"),
+            ("Chevrolet LS V8", "engine", 12000, 120, -0.5, "Американский V8"),
+            
+            # Турбины
+            ("Garrett GT35", "turbo", 3000, 40, -0.2, "Высокопроизводительная турбина"),
+            ("BorgWarner EFR 8374", "turbo", 4500, 60, -0.3, "Современная турбина с низкой инерцией"),
+            
+            # Покрышки
+            ("Michelin Pilot Sport 4S", "tires", 1500, 0, -0.1, "Спортивные покрышки для лучшего сцепления"),
+            ("Pirelli P Zero", "tires", 2000, 0, -0.15, "Высокопроизводительные летние шины"),
+            
+            # Выхлопы
+            ("Akrapovič Evolution", "exhaust", 2500, 15, -0.05, "Легковесная титановая система"),
+            ("Borla Atak", "exhaust", 1800, 10, -0.03, "Агрессивный звук выхлопа"),
+            
+            # Радиаторы
+            ("Mishimoto M-Line", "radiator", 1200, 0, 0, "Улучшенное охлаждение двигателя"),
+            
+            # Закись азота
+            ("NOS Sniper Kit", "nos", 8000, 100, -0.4, "Система закиси азота для кратковременного ускорения"),
+            
+            # Подвески
+            ("KW Variant 3", "suspension", 3500, 0, -0.1, "Регулируемая спортивная подвеска")
+        ]
+        
+        self.cursor.executemany('''
+            INSERT OR IGNORE INTO parts (name, type, price, horsepower_boost, acceleration_boost, description)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', parts)
         
         self.conn.commit()
     
-    # Методы пользователей
-    def get_user(self, user_id: int):
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return cursor.fetchone()
+    def get_player(self, user_id: int) -> Optional[Player]:
+        self.cursor.execute('SELECT * FROM players WHERE user_id = ?', (user_id,))
+        row = self.cursor.fetchone()
+        if row:
+            return Player(
+                user_id=row[0],
+                username=row[1],
+                nickname=row[2],
+                balance=row[3],
+                rating=row[4],
+                followers=row[5],
+                wins=row[6],
+                losses=row[7],
+                current_car_id=row[8],
+                created_at=row[9]
+            )
+        return None
     
-    def create_user(self, user_id: int, username: str, first_name: str, nickname: str):
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute('''
-                INSERT INTO users (user_id, username, first_name, nickname, balance)
-                VALUES (?, ?, ?, ?, 10000)
-            ''', (user_id, username, first_name, nickname))
-            self.conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
-    
-    def check_nickname(self, nickname: str):
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM users WHERE nickname = ?", (nickname,))
-        return cursor.fetchone()["count"] == 0
-    
-    def update_user_balance(self, user_id: int, amount: int):
-        cursor = self.conn.cursor()
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    def create_player(self, user_id: int, username: str, nickname: str):
+        self.cursor.execute('''
+            INSERT INTO players (user_id, username, nickname, balance, current_car_id)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, username, nickname, INITIAL_BALANCE, 1))
         self.conn.commit()
     
-    def get_user_cars(self, user_id: int):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT uc.*, c.* 
-            FROM user_cars uc
-            JOIN cars c ON uc.car_id = c.id
-            WHERE uc.user_id = ?
-        ''', (user_id,))
-        return cursor.fetchall()
+    def get_car(self, car_id: int) -> Optional[Car]:
+        self.cursor.execute('SELECT * FROM cars WHERE id = ?', (car_id,))
+        row = self.cursor.fetchone()
+        if row:
+            return Car(
+                id=row[0],
+                name=row[1],
+                brand=row[2],
+                country=row[3],
+                price=row[4],
+                horsepower=row[5],
+                acceleration_0_100=row[6],
+                top_speed=row[7],
+                photo_file_id=row[8],
+                description=row[9]
+            )
+        return None
     
-    def get_active_car(self, user_id: int):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT uc.*, c.* 
-            FROM user_cars uc
-            JOIN cars c ON uc.car_id = c.id
-            WHERE uc.user_id = ? AND uc.is_active = 1
-        ''', (user_id,))
-        return cursor.fetchone()
+    def get_cars_by_country(self, country: str) -> List[Car]:
+        self.cursor.execute('SELECT * FROM cars WHERE country = ? AND price > 0 ORDER BY price', (country,))
+        rows = self.cursor.fetchall()
+        return [Car(*row) for row in rows]
     
-    def buy_car(self, user_id: int, car_id: int):
-        cursor = self.conn.cursor()
-        
-        # Проверяем баланс
-        cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            return False
-        
-        user_balance = user["balance"]
-        
-        cursor.execute("SELECT price FROM cars WHERE id = ?", (car_id,))
-        car = cursor.fetchone()
-        if not car:
-            return False
-        
-        car_price = car["price"]
-        
-        if user_balance >= car_price:
-            # Снимаем деньги
-            cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (car_price, user_id))
-            
-            # Добавляем машину
-            cursor.execute('''
-                INSERT INTO user_cars (user_id, car_id, is_active)
-                VALUES (?, ?, 0)
-            ''', (user_id, car_id))
-            
-            # Если это первая машина, делаем активной
-            cursor.execute("SELECT COUNT(*) as count FROM user_cars WHERE user_id = ?", (user_id,))
-            car_count = cursor.fetchone()["count"]
-            
-            if car_count == 1:
-                cursor.execute('''
-                    UPDATE user_cars SET is_active = 1 
-                    WHERE user_id = ? AND car_id = ?
-                ''', (user_id, car_id))
-            
-            self.conn.commit()
-            return True
-        return False
-    
-    def set_active_car(self, user_id: int, car_id: int):
-        cursor = self.conn.cursor()
-        
-        # Снимаем активность со всех машин
-        cursor.execute('''
-            UPDATE user_cars SET is_active = 0 
-            WHERE user_id = ?
-        ''', (user_id,))
-        
-        # Устанавливаем активную машину
-        cursor.execute('''
-            UPDATE user_cars SET is_active = 1 
-            WHERE user_id = ? AND car_id = ?
-        ''', (user_id, car_id))
-        
-        # Обновляем current_car_id
-        cursor.execute('''
-            UPDATE users SET current_car_id = ? 
-            WHERE user_id = ?
-        ''', (car_id, user_id))
-        
+    def update_player_car(self, user_id: int, car_id: int):
+        self.cursor.execute('UPDATE players SET current_car_id = ? WHERE user_id = ?', (car_id, user_id))
         self.conn.commit()
     
-    def use_promocode(self, user_id: int, code: str):
-        cursor = self.conn.cursor()
-        
-        # Проверяем промокод
-        cursor.execute('''
-            SELECT * FROM promocodes 
-            WHERE code = ? AND is_active = 1
-        ''', (code,))
-        promocode = cursor.fetchone()
-        
-        if not promocode:
-            return None
-        
-        # Проверяем, использовал ли уже
-        cursor.execute('''
-            SELECT * FROM used_promocodes up
-            JOIN promocodes p ON up.promocode_id = p.id
-            WHERE up.user_id = ? AND p.code = ?
-        ''', (user_id, code))
-        
-        if cursor.fetchone():
-            return None
-        
-        # Начисляем награду
-        if promocode["reward_type"] == "money":
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", 
-                         (promocode["reward_value"], user_id))
-        
-        # Отмечаем как использованный
-        cursor.execute('''
-            INSERT INTO used_promocodes (user_id, promocode_id)
-            VALUES (?, ?)
-        ''', (user_id, promocode["id"]))
-        
+    def update_player_balance(self, user_id: int, amount: int):
+        self.cursor.execute('UPDATE players SET balance = balance + ? WHERE user_id = ?', (amount, user_id))
         self.conn.commit()
-        return promocode["reward_type"], promocode["reward_value"]
     
-    def get_cars_by_region(self, region: str, limit: int = 20):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT * FROM cars 
-            WHERE region = ? 
-            ORDER BY price 
+    def get_top_players_by_wins(self, limit=10):
+        self.cursor.execute('''
+            SELECT nickname, username, wins, rating, followers 
+            FROM players 
+            ORDER BY wins DESC 
             LIMIT ?
-        ''', (region, limit))
-        return cursor.fetchall()
+        ''', (limit,))
+        return self.cursor.fetchall()
     
-    def get_top_money(self, limit: int = 10):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT nickname, balance 
-            FROM users 
-            WHERE is_banned = 0
+    def get_top_players_by_money(self, limit=10):
+        self.cursor.execute('''
+            SELECT nickname, username, balance, rating, followers 
+            FROM players 
             ORDER BY balance DESC 
             LIMIT ?
         ''', (limit,))
-        return cursor.fetchall()
+        return self.cursor.fetchall()
     
-    def get_top_rating(self, limit: int = 10):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT nickname, rating 
-            FROM users 
-            WHERE is_banned = 0
+    def get_top_players_by_rating(self, limit=10):
+        self.cursor.execute('''
+            SELECT nickname, username, rating, wins, followers 
+            FROM players 
             ORDER BY rating DESC 
             LIMIT ?
         ''', (limit,))
-        return cursor.fetchall()
-    
-    def get_top_followers(self, limit: int = 10):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT nickname, followers 
-            FROM users 
-            WHERE is_banned = 0
-            ORDER BY followers DESC 
-            LIMIT ?
-        ''', (limit,))
-        return cursor.fetchall()
+        return self.cursor.fetchall()
 
-# Глобальная переменная базы данных
+# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
 db = Database()
+waiting_for_duel = {}  # user_id: {'message_id': int, 'time': datetime}
 
-# Клавиатуры
+# ==================== КЛАВИАТУРЫ ====================
 def get_main_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚗 Гараж", callback_data="garage"),
-         InlineKeyboardButton("🏎 Гонки", callback_data="racing")],
-        [InlineKeyboardButton("🛒 Магазин", callback_data="shop"),
-         InlineKeyboardButton("⚙️ Тюнинг", callback_data="tuning")],
-        [InlineKeyboardButton("🏆 Топы", callback_data="top"),
-         InlineKeyboardButton("💰 Рынок", callback_data="market")],
-        [InlineKeyboardButton("👑 Профиль", callback_data="profile"),
-         InlineKeyboardButton("⚔️ Дуэль", callback_data="duel")],
-        [InlineKeyboardButton("🎁 Промокод", callback_data="promocode")]
-    ])
+    keyboard = [
+        [InlineKeyboardButton("🏎️ Гонка с ботом", callback_data="race_bot")],
+        [InlineKeyboardButton("⚔️ Дуэль с игроком", callback_data="duel_search")],
+        [InlineKeyboardButton("🏪 Автосалон", callback_data="car_shop")],
+        [InlineKeyboardButton("🔧 Магазин запчастей", callback_data="parts_shop")],
+        [InlineKeyboardButton("👤 Мой гараж", callback_data="my_garage")],
+        [InlineKeyboardButton("🏆 Топ игроков", callback_data="top_players")],
+        [InlineKeyboardButton("🎁 Промокод", callback_data="use_promo")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-def get_training_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Начать обучение", callback_data="start_training")],
-        [InlineKeyboardButton("⏩ Пропустить", callback_data="skip_training")]
-    ])
-
-def get_car_selection_keyboard(car_index: int, total_cars: int):
+def get_car_choice_keyboard(car_index=0, total=3):
     keyboard = []
-    
     if car_index > 0:
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"car_{car_index-1}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"prev_car_{car_index}")])
     
     row = []
     row.append(InlineKeyboardButton("✅ Выбрать", callback_data=f"select_car_{car_index}"))
     
-    if car_index < total_cars - 1:
-        row.append(InlineKeyboardButton("Далее ▶️", callback_data=f"car_{car_index+1}"))
+    if car_index < total - 1:
+        row.append(InlineKeyboardButton("Далее ➡️", callback_data=f"next_car_{car_index}"))
     
     if row:
         keyboard.append(row)
     
     return InlineKeyboardMarkup(keyboard)
 
-def get_race_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 ГОТОВ!", callback_data="ready_to_race")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ])
-
-def get_shop_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇪🇺 Европейский", callback_data="european_market")],
-        [InlineKeyboardButton("🇯🇵 Азиатский", callback_data="asian_market")],
-        [InlineKeyboardButton("🇺🇸 Американский", callback_data="american_market")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ])
-
-def get_top_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 По деньгам", callback_data="top_money")],
-        [InlineKeyboardButton("⭐️ По рейтингу", callback_data="top_rating")],
-        [InlineKeyboardButton("👥 По подписчикам", callback_data="top_followers")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ])
-
-def get_market_navigation_keyboard(current_index: int, total_cars: int, car_id: int, back_to: str = "shop"):
-    keyboard = []
-    row = []
-    
-    if current_index > 0:
-        row.append(InlineKeyboardButton("◀️ Назад", callback_data="market_prev"))
-    
-    if current_index < total_cars - 1:
-        row.append(InlineKeyboardButton("Далее ▶️", callback_data="market_next"))
-    
-    if row:
-        keyboard.append(row)
-    
-    keyboard.append([
-        InlineKeyboardButton("✅ Купить", callback_data=f"buy_car_{car_id}"),
-        InlineKeyboardButton("🔙 Назад", callback_data=back_to)
-    ])
-    
+def get_car_market_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🇪🇺 Европейские", callback_data="market_europe")],
+        [InlineKeyboardButton("🇯🇵 Азиатские", callback_data="market_asia")],
+        [InlineKeyboardButton("🇺🇸 Американские", callback_data="market_usa")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
-# Обработчики команд
+def get_parts_shop_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🚗 Двигатели", callback_data="parts_engine")],
+        [InlineKeyboardButton("🌀 Турбины", callback_data="parts_turbo")],
+        [InlineKeyboardButton("🛞 Покрышки", callback_data="parts_tires")],
+        [InlineKeyboardButton("💨 Выхлопы", callback_data="parts_exhaust")],
+        [InlineKeyboardButton("🔄 Подвеска", callback_data="parts_suspension")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== ОСНОВНЫЕ ФУНКЦИИ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_id = user.id
+    player = db.get_player(user.id)
     
-    # Проверяем, зарегистрирован ли пользователь
-    existing_user = db.get_user(user_id)
-    
-    if existing_user:
-        # Пользователь уже зарегистрирован
+    if not player:
         await update.message.reply_text(
-            f"🏁 Добро пожаловать обратно, {existing_user['nickname']}!",
-            reply_markup=get_main_menu_keyboard()
+            "🏎️ *Добро пожаловать в Racing Bot!*\n\n"
+            "Введите ваш игровой никнейм (только буквы и цифры, 3-15 символов):",
+            parse_mode=ParseMode.MARKDOWN
         )
-        return MAIN_MENU
+        return CHOOSING_CAR
     
-    # Новый пользователь - просим ввести ник
-    await update.message.reply_text(
-        "🏁 Добро пожаловать в Racing Bot!\n\n"
-        "Пожалуйста, введите свой игровой ник (3-15 символов, только буквы и цифры):"
-    )
-    return REGISTER_NAME
+    if not player.tutorial_completed:
+        await show_tutorial(update, context)
+        return CHOOSING_CAR
+    
+    await show_main_menu(update, context)
+    return MAIN_MENU
 
-async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+async def process_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nickname = update.message.text.strip()
     
-    # Проверяем длину ника
-    if len(nickname) < 3 or len(nickname) > 15:
+    if not (3 <= len(nickname) <= 15) or not nickname.isalnum():
         await update.message.reply_text(
-            "❌ Ник должен содержать от 3 до 15 символов.\n"
-            "Пожалуйста, введите другой ник:"
+            "❌ Никнейм должен содержать только буквы и цифры, от 3 до 15 символов.\n"
+            "Попробуйте еще раз:"
         )
-        return REGISTER_NAME
+        return CHOOSING_CAR
     
-    # Проверяем, содержит ли ник только допустимые символы
-    if not nickname.isalnum():
-        await update.message.reply_text(
-            "❌ Ник должен содержать только буквы и цифры (без пробелов и спецсимволов).\n"
-            "Пожалуйста, введите другой ник:"
-        )
-        return REGISTER_NAME
-    
-    # Проверяем уникальность ника
-    if not db.check_nickname(nickname):
-        await update.message.reply_text(
-            "❌ Этот ник уже занят.\n"
-            "Пожалуйста, выберите другой ник:"
-        )
-        return REGISTER_NAME
-    
-    # Создаем пользователя
-    username = user.username if user.username else user.first_name
-    success = db.create_user(user.id, username, user.first_name, nickname)
-    
-    if not success:
-        await update.message.reply_text(
-            "❌ Ошибка при регистрации. Попробуйте позже или выберите другой ник."
-        )
-        return REGISTER_NAME
-    
-    # Отправляем приветственное сообщение
-    welcome_text = (
-        f"🎉 Отлично, {nickname}! Ты успешно зарегистрирован!\n\n"
-        f"💰 Начальный баланс: $10,000\n"
-        f"⭐️ Начальный рейтинг: 1000\n\n"
-        "📚 Рекомендуем пройти обучение, чтобы освоить основы игры."
+    db.create_player(
+        user_id=update.effective_user.id,
+        username=update.effective_user.username or update.effective_user.first_name,
+        nickname=nickname
     )
     
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=get_training_keyboard()
-    )
-    
-    return TRAINING
-
-async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    training_text = (
-        "🎮 ОБУЧЕНИЕ\n\n"
-        "1. Выберите свою первую машину из трех вариантов\n"
-        "2. Участвуйте в гонках, чтобы зарабатывать деньги\n"
-        "3. Покупайте новые машины и улучшайте их\n"
-        "4. Соревнуйтесь с другими игроками в дуэлях\n"
-        "5. Поднимайтесь в топах и станьте легендой!\n\n"
-        "Давайте начнем с выбора первой машины!"
-    )
-    
-    await query.edit_message_text(
-        text=training_text,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🚗 Выбрать машину", callback_data="choose_first_car")
-        ]])
-    )
-    return TRAINING
-
-async def choose_first_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # Машины для обучения
-    training_cars = [
-        {
-            "name": "Mitsubishi Lancer X Sportback",
-            "hp": 168,
-            "acceleration": 8.5,
-            "top_speed": 210,
-            "price": 15000,
-            "image": "lancer_x.jpg"
-        },
-        {
-            "name": "Opel Insignia OPC",
-            "hp": 280,
-            "acceleration": 6.0,
-            "top_speed": 250,
-            "price": 35000,
-            "image": "opel_insignia.jpg"
-        },
-        {
-            "name": "Cadillac CTS",
-            "hp": 321,
-            "acceleration": 5.6,
-            "top_speed": 240,
-            "price": 45000,
-            "image": "cadillac_cts.jpg"
-        }
-    ]
-    
-    context.user_data["training_cars"] = training_cars
-    context.user_data["car_index"] = 0
-    
-    car = training_cars[0]
-    car_text = (
-        f"🚗 {car['name']}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['hp']} л.с.\n"
-        f"• Разгон 0-100: {car['acceleration']} сек\n"
-        f"• Макс. скорость: {car['top_speed']} км/ч\n"
-        f"• Цена: ${car['price']:,}\n\n"
-        f"Выберите эту машину или посмотрите другие варианты."
-    )
-    
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_car_selection_keyboard(0, 3)
-    )
+    await show_tutorial(update, context)
     return CHOOSING_CAR
 
-async def show_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
-    data = query.data
-    car_index = int(data.split("_")[1])
+    # Отправляем приветственное фото (замените на ваше)
+    try:
+        await context.bot.send_photo(
+            chat_id=user.id,
+            photo="https://via.placeholder.com/400x200/0000FF/808080?text=Racing+Bot+Welcome",
+            caption=(
+                "🏎️ *Добро пожаловать в мир Racing Bot!*\n\n"
+                "Здесь ты сможешь:\n"
+                "• Выбрать и купить крутые машины\n"
+                "• Тюнинговать их для лучших характеристик\n"
+                "• Участвовать в гонках и дуэлях\n"
+                "• Зарабатывать деньги и подписчиков\n"
+                "• Подниматься в топах лучших гонщиков!\n\n"
+                "Давай начнем с выбора твоей первой машины!"
+            ),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except:
+        await update.message.reply_text(
+            "🏎️ *Добро пожаловать в мир Racing Bot!*\n\n"
+            "Давай начнем с выбора твоей первой машины!",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
-    if "training_cars" not in context.user_data:
-        return await choose_first_car(update, context)
+    context.user_data['car_index'] = 0
+    await show_car_selection(update, context)
+
+async def show_car_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    car_index = context.user_data.get('car_index', 0)
+    cars = [1, 2, 3]  # ID начальных машин
     
-    training_cars = context.user_data["training_cars"]
-    context.user_data["car_index"] = car_index
+    if car_index >= len(cars):
+        car_index = 0
+        context.user_data['car_index'] = 0
     
-    car = training_cars[car_index]
-    car_text = (
-        f"🚗 {car['name']}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['hp']} л.с.\n"
-        f"• Разгон 0-100: {car['acceleration']} сек\n"
-        f"• Макс. скорость: {car['top_speed']} км/ч\n"
-        f"• Цена: ${car['price']:,}\n\n"
-        f"Выберите эту машину или посмотрите другие варианты."
-    )
+    car_id = cars[car_index]
+    car = db.get_car(car_id)
     
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_car_selection_keyboard(car_index, 3)
-    )
-    return CHOOSING_CAR
+    if car:
+        # Здесь вы можете заменить фото на свои
+        # Для примера используем заглушки
+        photo_urls = [
+            "https://via.placeholder.com/400x200/FF0000/FFFFFF?text=Lancer+X+Sportback",
+            "https://via.placeholder.com/400x200/0000FF/FFFFFF?text=Opel+Insignia+OPC",
+            "https://via.placeholder.com/400x200/008000/FFFFFF?text=Cadillac+CTS"
+        ]
+        
+        message_text = (
+            f"🚗 *{car.name}*\n\n"
+            f"*Страна:* {car.country}\n"
+            f"*Мощность:* {car.horsepower} л.с.\n"
+            f"*Разгон 0-100:* {car.acceleration_0_100} сек\n"
+            f"*Макс. скорость:* {car.top_speed} км/ч\n\n"
+            f"{car.description}"
+        )
+        
+        keyboard = get_car_choice_keyboard(car_index, len(cars))
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_media(
+                media=InputMediaPhoto(media=photo_urls[car_index], caption=message_text, parse_mode=ParseMode.MARKDOWN),
+                reply_markup=keyboard
+            )
+        else:
+            await context.bot.send_photo(
+                chat_id=user.id,
+                photo=photo_urls[car_index],
+                caption=message_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
 
 async def select_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
-    car_index = context.user_data.get("car_index", 0)
+    user = update.effective_user
+    car_index = int(query.data.split('_')[-1])
+    cars = [1, 2, 3]
     
-    # Покупаем первую машину (бесплатно для обучения)
-    # В базе тренировочные машины имеют ID 1, 2, 3
-    car_id = car_index + 1
-    db.buy_car(user_id, car_id)
-    db.set_active_car(user_id, car_id)
-    
-    await query.edit_message_text(
-        text="🎉 Поздравляем! Вы выбрали свою первую машину!\n\n"
-             "Теперь вы готовы к своим первым гонкам!\n"
-             "Попробуйте участвовать в гонках против бота, "
-             "чтобы понять механику и заработать первые деньги.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏎 Начать первую гонку", callback_data="first_race")
-        ]])
-    )
-    return RACING
+    if car_index < len(cars):
+        selected_car_id = cars[car_index]
+        db.update_player_car(user.id, selected_car_id)
+        
+        await query.edit_message_caption(
+            caption="✅ *Отличный выбор!*\n\nТвоя первая машина готова к гонкам!\n\n"
+                   "Теперь давай пройдем обучение, чтобы понять как устроены гонки.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        await asyncio.sleep(2)
+        await show_training_race(update, context)
 
-async def first_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_training_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    
+    tutorial_text = (
+        "🏁 *Обучение: Как проходят гонки*\n\n"
+        "1. Ты видишь информацию о гонке\n"
+        "2. Нажимаешь кнопку 'Готов'\n"
+        "3. Через 5-6 секунд нажимаешь 'Старт'\n"
+        "4. Если нажмешь раньше - фальстарт\n"
+        "5. Если позже - поздний старт\n"
+        "6. Правильный старт = победа!\n\n"
+        "В настоящих гонках ты будешь соревноваться с другими игроками."
+    )
+    
+    keyboard = [[InlineKeyboardButton("✅ Понятно, начать тренировку", callback_data="start_training")]]
+    
+    if query:
+        await query.edit_message_caption(
+            caption=tutorial_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=tutorial_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def start_training_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    user = update.effective_user
+    player = db.get_player(user.id)
+    car = db.get_car(player.current_car_id) if player else None
     
     race_info = (
-        "🏁 ПЕРВАЯ ГОНКА\n\n"
-        "Дистанция: 500 метров\n"
-        "Соперник: Бот-новичок\n"
-        "Награда за победу: $500-2000\n"
-        "Подписчики: +10-50\n\n"
-        "Механика гонки:\n"
-        "1. Нажмите 'ГОТОВ!'\n"
-        "2. Через 5 секунд начнется обратный отсчет\n"
-        "3. Нажмите 'СТАРТ!' в интервале 5-6 секунд\n"
-        "4. Машина проедет 500 метров\n"
-        "5. Получите награду за победу!\n\n"
-        "Внимание! Если нажмете раньше 5 сек - фальстарт!\n"
-        "Если позже 6 сек - поздний старт!"
+        f"🏁 *Тренировочная гонка*\n\n"
+        f"*Дистанция:* 500 метров\n"
+        f"*Твоя машина:* {car.name if car else 'Неизвестно'}\n"
+        f"*Мощность:* {car.horsepower if car else 0} л.с.\n\n"
+        f"Нажми 'Готов' когда будешь готов стартовать!"
     )
     
-    await query.edit_message_text(
-        text=race_info,
-        reply_markup=get_race_keyboard()
-    )
-    return RACING
-
-async def ready_to_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    keyboard = [[InlineKeyboardButton("🎮 Готов!", callback_data="training_ready")]]
     
-    user_id = query.from_user.id
-    context.user_data["race_start_time"] = time.time()
-    
-    await query.edit_message_text(
-        text="⏱ Ожидание старта...\n"
-             "Нажмите 'СТАРТ!' через 5 секунд!\n\n"
-             "Таймер: 5...",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏁 СТАРТ!", callback_data="race_start")
-        ]])
-    )
-    
-    # Запускаем обратный отсчет
-    asyncio.create_task(countdown_timer(query, context))
-    
-    return RACING
-
-async def countdown_timer(query, context):
-    user_id = query.from_user.id
-    message_id = query.message.message_id
-    
-    for i in range(4, 0, -1):
-        await asyncio.sleep(1)
-        try:
-            await context.bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=f"⏱ Ожидание старта...\n"
-                     f"Нажмите 'СТАРТ!' через 5 секунд!\n\n"
-                     f"Таймер: {i}...",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏁 СТАРТ!", callback_data="race_start")
-                ]])
-            )
-        except:
-            pass
-
-async def race_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    start_time = context.user_data.get("race_start_time", 0)
-    current_time = time.time()
-    reaction_time = current_time - start_time
-    
-    if reaction_time < 5.0:
-        await query.edit_message_text(
-            text="❌ ФАЛЬСТАРТ!\n"
-                 "Вы нажали слишком рано!\n"
-                 "Попробуйте еще раз.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Повторить", callback_data="first_race")
-            ]])
-        )
-        return RACING
-    elif reaction_time > 6.0:
-        await query.edit_message_text(
-            text="⚠️ ПОЗДНИЙ СТАРТ!\n"
-                 "Вы задержались на старте!\n"
-                 "Попробуйте еще раз.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Повторить", callback_data="first_race")
-            ]])
-        )
-        return RACING
-    
-    # Успешный старт
-    await query.edit_message_text(
-        text="✅ ИДЕАЛЬНЫЙ СТАРТ!\n"
-             f"⏱ Реакция: {reaction_time:.2f} сек\n\n"
-             "Машина разгоняется...",
-        reply_markup=InlineKeyboardMarkup([[]])
-    )
-    
-    # Имитация гонки
-    await asyncio.sleep(3)
-    
-    # Результаты гонки
-    reward_money = random.randint(500, 2000)
-    
-    # Обновляем баланс пользователя
-    db.update_user_balance(user_id, reward_money)
-    
-    await query.edit_message_text(
-        text=f"🏁 ФИНИШ!\n\n"
-             f"💰 Выигрыш: ${reward_money}\n"
-             f"📈 Опыт: +100\n\n"
-             f"Поздравляем с первой победой!",
-        reply_markup=get_main_menu_keyboard()
-    )
-    
-    return MAIN_MENU
-
-async def skip_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user = db.get_user(user_id)
-    
-    if user:
-        profile_text = (
-            f"👤 {user['nickname']}\n"
-            f"💰 Баланс: ${user['balance']:,}\n"
-            f"⭐️ Рейтинг: {user['rating']}\n"
-            f"👥 Подписчики: {user['followers']:,}\n"
-            f"🏆 Победы: {user['wins']} / {user['total_races']}\n\n"
-            f"Выберите действие:"
-        )
-        
-        await query.edit_message_text(
-            text=profile_text,
-            reply_markup=get_main_menu_keyboard()
-        )
-    
-    return MAIN_MENU
-
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user = db.get_user(user_id)
-    
-    if user:
-        profile_text = (
-            f"👤 {user['nickname']}\n"
-            f"💰 Баланс: ${user['balance']:,}\n"
-            f"⭐️ Рейтинг: {user['rating']}\n"
-            f"👥 Подписчики: {user['followers']:,}\n"
-            f"🏆 Победы: {user['wins']} / {user['total_races']}\n\n"
-            f"Выберите действие:"
-        )
-        
-        await query.edit_message_text(
-            text=profile_text,
-            reply_markup=get_main_menu_keyboard()
-        )
-    
-    return MAIN_MENU
-
-async def garage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_cars = db.get_user_cars(user_id)
-    
-    if not user_cars:
-        await query.edit_message_text(
-            text="🚫 У вас пока нет машин!\n"
-                 "Купите первую машину в магазине.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🛒 Магазин", callback_data="shop"),
-                InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-            ]])
-        )
-        return GARAGE
-    
-    car_text = "🚗 ВАШ ГАРАЖ:\n\n"
-    
-    for idx, car in enumerate(user_cars, 1):
-        status = "✅ АКТИВНА" if car["is_active"] else "❌ Не активна"
-        total_hp = car['base_hp'] + car['tuning_hp']
-        total_acc = car['base_acceleration_0_100'] + car['tuning_acceleration']
-        total_speed = car['base_top_speed'] + car['tuning_top_speed']
-        
-        car_text += (
-            f"{idx}. {car['brand']} {car['model']} {status}\n"
-            f"   🐎 {total_hp} л.с. | ⚡️ {total_acc:.1f} сек | 🚀 {total_speed} км/ч\n\n"
-        )
-    
-    keyboard = []
-    for car in user_cars:
-        if not car["is_active"]:
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"🚗 Выбрать {car['brand']} {car['model']}",
-                    callback_data=f"activate_car_{car['id']}"
-                )
-            ])
-    
-    keyboard.append([
-        InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"),
-        InlineKeyboardButton("🛒 Магазин", callback_data="shop")
-    ])
-    
-    await query.edit_message_text(
-        text=car_text,
+    await query.edit_message_caption(
+        caption=race_info,
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
-    return GARAGE
 
-async def activate_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def training_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
-    data = query.data
-    car_id = int(data.split("_")[2])
+    user = update.effective_user
     
-    db.set_active_car(user_id, car_id)
+    # Случайное время реакции между 5 и 6 секундами
+    reaction_time = random.uniform(START_REACTION_MIN, START_REACTION_MAX)
+    context.user_data['reaction_time'] = reaction_time
+    context.user_data['race_start_time'] = datetime.now().timestamp()
     
-    await query.edit_message_text(
-        text="✅ Машина активирована!",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔙 Назад в гараж", callback_data="garage"),
-            InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-        ]])
+    await query.edit_message_caption(
+        caption="⏱️ *Жди сигнал...*\n\nНажми 'Старт!' как только загорится зеленый!",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚦 Старт!", callback_data="training_start")]])
     )
     
-    return GARAGE
-
-async def shop_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        text="🛒 МАГАЗИН\n\n"
-             "Выберите категорию:",
-        reply_markup=get_shop_keyboard()
+    # Запускаем отсчет
+    context.user_data['countdown_task'] = asyncio.create_task(
+        training_countdown(query.message.chat_id, query.message.message_id, context, reaction_time)
     )
-    
-    return SHOP_MENU
 
-async def european_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def training_countdown(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE, reaction_time: float):
+    await asyncio.sleep(reaction_time)
     
-    cars = db.get_cars_by_region("european", 20)
-    
-    if not cars:
-        await query.edit_message_text(
-            text="🚫 Европейские машины временно недоступны.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="shop")
-            ]])
+    try:
+        await context.bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption="✅ *СЕЙЧАС!* Нажимай Старт!",
+            parse_mode=ParseMode.MARKDOWN
         )
-        return EUROPEAN_MARKET
-    
-    context.user_data["market_cars"] = cars
-    context.user_data["market_index"] = 0
-    context.user_data["market_type"] = "european"
-    
-    car = cars[0]
-    car_text = (
-        f"🇪🇺 ЕВРОПЕЙСКИЙ АВТОПРОМ\n\n"
-        f"🚗 {car['brand']} {car['model']}\n"
-        f"💰 Цена: ${car['price']:,}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['base_hp']} л.с.\n"
-        f"• Разгон 0-100: {car['base_acceleration_0_100']} сек\n"
-        f"• Макс. скорость: {car['base_top_speed']} км/ч"
-    )
-    
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_market_navigation_keyboard(0, len(cars), car['id'], "shop")
-    )
-    
-    return EUROPEAN_MARKET
+    except:
+        pass
 
-async def asian_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def training_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    user = update.effective_user
     
-    cars = db.get_cars_by_region("asian", 20)
+    # Отменяем отсчет если он еще идет
+    if 'countdown_task' in context.user_data:
+        context.user_data['countdown_task'].cancel()
     
-    if not cars:
-        await query.edit_message_text(
-            text="🚫 Азиатские машины временно недоступны.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="shop")
-            ]])
-        )
-        return ASIAN_MARKET
+    race_start_time = context.user_data.get('race_start_time', 0)
+    reaction_time = context.user_data.get('reaction_time', 5.5)
+    current_time = datetime.now().timestamp()
+    player_reaction = current_time - race_start_time
     
-    context.user_data["market_cars"] = cars
-    context.user_data["market_index"] = 0
-    context.user_data["market_type"] = "asian"
+    # Определяем результат
+    time_diff = abs(player_reaction - reaction_time)
     
-    car = cars[0]
-    car_text = (
-        f"🇯🇵 АЗИАТСКИЙ АВТОПРОМ\n\n"
-        f"🚗 {car['brand']} {car['model']}\n"
-        f"💰 Цена: ${car['price']:,}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['base_hp']} л.с.\n"
-        f"• Разгон 0-100: {car['base_acceleration_0_100']} сек\n"
-        f"• Макс. скорость: {car['base_top_speed']} км/ч"
-    )
-    
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_market_navigation_keyboard(0, len(cars), car['id'], "shop")
-    )
-    
-    return ASIAN_MARKET
-
-async def american_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    cars = db.get_cars_by_region("american", 20)
-    
-    if not cars:
-        await query.edit_message_text(
-            text="🚫 Американские машины временно недоступны.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="shop")
-            ]])
-        )
-        return AMERICAN_MARKET
-    
-    context.user_data["market_cars"] = cars
-    context.user_data["market_index"] = 0
-    context.user_data["market_type"] = "american"
-    
-    car = cars[0]
-    car_text = (
-        f"🇺🇸 АМЕРИКАНСКИЙ АВТОПРОМ\n\n"
-        f"🚗 {car['brand']} {car['model']}\n"
-        f"💰 Цена: ${car['price']:,}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['base_hp']} л.с.\n"
-        f"• Разгон 0-100: {car['base_acceleration_0_100']} сек\n"
-        f"• Макс. скорость: {car['base_top_speed']} км/ч"
-    )
-    
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_market_navigation_keyboard(0, len(cars), car['id'], "shop")
-    )
-    
-    return AMERICAN_MARKET
-
-async def market_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    current_index = context.user_data.get("market_index", 0)
-    cars = context.user_data.get("market_cars", [])
-    market_type = context.user_data.get("market_type", "")
-    
-    if data == "market_next" and current_index < len(cars) - 1:
-        current_index += 1
-    elif data == "market_prev" and current_index > 0:
-        current_index -= 1
-    
-    context.user_data["market_index"] = current_index
-    
-    car = cars[current_index]
-    
-    # Определяем текст региона
-    region_texts = {
-        "european": "🇪🇺 ЕВРОПЕЙСКИЙ АВТОПРОМ",
-        "asian": "🇯🇵 АЗИАТСКИЙ АВТОПРОМ",
-        "american": "🇺🇸 АМЕРИКАНСКИЙ АВТОПРОМ"
-    }
-    region_text = region_texts.get(market_type, "МАГАЗИН")
-    
-    car_text = (
-        f"{region_text}\n\n"
-        f"🚗 {car['brand']} {car['model']}\n"
-        f"💰 Цена: ${car['price']:,}\n\n"
-        f"⚙️ Характеристики:\n"
-        f"• Лошадиные силы: {car['base_hp']} л.с.\n"
-        f"• Разгон 0-100: {car['base_acceleration_0_100']} сек\n"
-        f"• Макс. скорость: {car['base_top_speed']} км/ч"
-    )
-    
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=get_market_navigation_keyboard(current_index, len(cars), car['id'], "shop")
-    )
-    
-    # Возвращаем соответствующее состояние
-    if market_type == "european":
-        return EUROPEAN_MARKET
-    elif market_type == "asian":
-        return ASIAN_MARKET
-    elif market_type == "american":
-        return AMERICAN_MARKET
+    if player_reaction < reaction_time - 0.5:
+        result = "🚫 *Фальстарт!* Ты стартовал слишком рано!"
+        success = False
+    elif player_reaction > reaction_time + 0.5:
+        result = "🐌 *Поздний старт!* Ты опоздал!"
+        success = False
     else:
-        return SHOP_MENU
+        result = "✅ *Идеальный старт!* Поздравляем!"
+        success = True
+    
+    # Симуляция гонки
+    player = db.get_player(user.id)
+    car = db.get_car(player.current_car_id) if player else None
+    
+    if car and success:
+        # Рассчитываем время заезда на основе характеристик машины
+        race_time = (RACE_DISTANCE / 1000) / (car.top_speed / 3.6) * random.uniform(0.9, 1.1)
+        race_time = round(race_time, 2)
+        
+        await query.edit_message_caption(
+            caption=f"{result}\n\n🏁 *Гонка началась!*\nМашина разгоняется...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        await asyncio.sleep(2)
+        
+        # Обновляем баланс игрока
+        db.update_player_balance(user.id, 1000)
+        
+        await query.edit_message_caption(
+            caption=(
+                f"{result}\n\n"
+                f"🏁 *Финиш!*\n"
+                f"*Время заезда:* {race_time} секунд\n"
+                f"*Дистанция:* 500 метров\n"
+                f"*Награда:* +1,000 💰\n\n"
+                f"🎉 *Обучение пройдено!* Теперь ты готов к настоящим гонкам!"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
+        )
+        
+        # Отмечаем обучение как пройденное
+        db.cursor.execute('UPDATE players SET tutorial_completed = TRUE WHERE user_id = ?', (user.id,))
+        db.conn.commit()
+    else:
+        await query.edit_message_caption(
+            caption=f"{result}\n\nПопробуй еще раз!",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Попробовать снова", callback_data="start_training")]])
+        )
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    
+    player = db.get_player(user.id)
+    if not player:
+        await start(update, context)
+        return
+    
+    car = db.get_car(player.current_car_id) if player.current_car_id else None
+    
+    menu_text = (
+        f"🏎️ *Главное меню*\n\n"
+        f"👤 *Игрок:* {player.nickname}\n"
+        f"💰 *Баланс:* {player.balance:,}\n"
+        f"⭐ *Рейтинг:* {player.rating}\n"
+        f"👥 *Подписчики:* {player.followers}\n"
+        f"🏆 *Побед/Поражений:* {player.wins}/{player.losses}\n\n"
+        f"🚗 *Текущая машина:* {car.name if car else 'Нет машины'}\n"
+        f"⚡ *Мощность:* {car.horsepower if car else 0} л.с.\n"
+    )
+    
+    keyboard = get_main_menu_keyboard()
+    
+    if query:
+        await query.edit_message_caption(
+            caption=menu_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=menu_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+async def car_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    shop_text = (
+        "🏪 *Автосалон*\n\n"
+        "Выберите регион для просмотра машин:\n\n"
+        "🇪🇺 *Европейские* - премиум и спорт\n"
+        "🇯🇵 *Азиатские* - надежность и тюнинг\n"
+        "🇺🇸 *Американские* - мощность и масштаб"
+    )
+    
+    keyboard = get_car_market_keyboard()
+    
+    await query.edit_message_caption(
+        caption=shop_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard
+    )
+
+async def show_market_cars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    market_type = query.data.split('_')[-1]
+    countries = {
+        'europe': 'Germany',
+        'asia': 'Japan',
+        'usa': 'USA'
+    }
+    
+    country = countries.get(market_type, 'Germany')
+    cars = db.get_cars_by_country(country)
+    
+    if not cars:
+        await query.edit_message_caption(
+            caption="❌ Машины этого региона временно отсутствуют",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="car_shop")]])
+        )
+        return
+    
+    context.user_data['market_cars'] = [car.id for car in cars]
+    context.user_data['market_index'] = 0
+    context.user_data['market_type'] = market_type
+    
+    await show_market_car(update, context, 0)
+
+async def show_market_car(update: Update, context: ContextTypes.DEFAULT_TYPE, index: int):
+    query = update.callback_query
+    car_ids = context.user_data.get('market_cars', [])
+    
+    if not car_ids or index >= len(car_ids):
+        return
+    
+    car_id = car_ids[index]
+    car = db.get_car(car_id)
+    user = update.effective_user
+    player = db.get_player(user.id)
+    
+    if not car:
+        return
+    
+    can_buy = player.balance >= car.price if player else False
+    
+    car_text = (
+        f"🚗 *{car.name}*\n"
+        f"*Марка:* {car.brand}\n"
+        f"*Страна:* {car.country}\n"
+        f"*Мощность:* {car.horsepower} л.с.\n"
+        f"*Разгон 0-100:* {car.acceleration_0_100} сек\n"
+        f"*Макс. скорость:* {car.top_speed} км/ч\n"
+        f"*Цена:* {car.price:,} 💰\n\n"
+        f"{car.description}\n\n"
+    )
+    
+    if can_buy:
+        car_text += "✅ У тебя достаточно денег для покупки!"
+    else:
+        car_text += f"❌ Недостаточно денег. Нужно ещё {car.price - player.balance:,} 💰"
+    
+    keyboard = []
+    
+    # Кнопки навигации
+    nav_buttons = []
+    if index > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"market_prev_{index}"))
+    
+    nav_buttons.append(InlineKeyboardButton(f"{index + 1}/{len(car_ids)}", callback_data="noop"))
+    
+    if index < len(car_ids) - 1:
+        nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"market_next_{index}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    # Кнопка покупки
+    if can_buy:
+        keyboard.append([InlineKeyboardButton("💰 Купить", callback_data=f"buy_car_{car_id}")])
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Назад к регионам", callback_data="car_shop")])
+    
+    # Здесь нужно добавить фото машины
+    # Для примера используем заглушку
+    photo_url = f"https://via.placeholder.com/400x200/333333/FFFFFF?text={car.name.replace(' ', '+')}"
+    
+    try:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=photo_url, caption=car_text, parse_mode=ParseMode.MARKDOWN),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except:
+        await query.edit_message_caption(
+            caption=car_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 async def buy_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
-    data = query.data
-    car_id = int(data.split("_")[2])
+    user = update.effective_user
+    car_id = int(query.data.split('_')[-1])
+    car = db.get_car(car_id)
+    player = db.get_player(user.id)
     
-    success = db.buy_car(user_id, car_id)
+    if not car or not player:
+        await query.answer("Ошибка покупки", show_alert=True)
+        return
     
-    if success:
-        await query.edit_message_text(
-            text="✅ Машина успешно куплена!\n"
-                 "Вы можете активировать ее в гараже.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚗 Гараж", callback_data="garage"),
-                InlineKeyboardButton("🛒 Продолжить покупки", callback_data="shop")
-            ]])
+    if player.balance >= car.price:
+        # Списываем деньги
+        db.update_player_balance(user.id, -car.price)
+        # Добавляем машину игроку
+        db.cursor.execute(
+            'INSERT INTO player_cars (user_id, car_id, horsepower, acceleration_0_100) VALUES (?, ?, ?, ?)',
+            (user.id, car.id, car.horsepower, car.acceleration_0_100)
         )
-    else:
-        await query.edit_message_text(
-            text="❌ Недостаточно средств!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🏎 Заработать деньги", callback_data="racing"),
-                InlineKeyboardButton("🔙 Назад", callback_data="shop")
-            ]])
-        )
-    
-    return SHOP_MENU
-
-async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user = db.get_user(user_id)
-    active_car = db.get_active_car(user_id)
-    
-    if not user:
-        return await main_menu(update, context)
-    
-    profile_text = (
-        f"👤 ПРОФИЛЬ ИГРОКА\n\n"
-        f"📛 Ник: {user['nickname']}\n"
-        f"💰 Баланс: ${user['balance']:,}\n"
-        f"⭐️ Рейтинг: {user['rating']}\n"
-        f"👥 Подписчики: {user['followers']:,}\n"
-        f"🏆 Победы: {user['wins']} из {user['total_races']}\n"
-        f"📈 Уровень: {user['level']}\n"
-        f"🎮 Опыт: {user['experience']}/1000\n"
-    )
-    
-    if active_car:
-        total_hp = active_car['base_hp'] + active_car['tuning_hp']
-        total_acc = active_car['base_acceleration_0_100'] + active_car['tuning_acceleration']
-        total_speed = active_car['base_top_speed'] + active_car['tuning_top_speed']
+        # Устанавливаем как текущую
+        db.update_player_car(user.id, car.id)
+        db.conn.commit()
         
-        profile_text += (
-            f"\n🚗 Текущая машина:\n"
-            f"• {active_car['brand']} {active_car['model']}\n"
-            f"• {total_hp} л.с.\n"
-            f"• {total_acc:.1f} сек до 100 км/ч\n"
-            f"• {total_speed} км/ч макс. скорость"
-        )
-    
-    await query.edit_message_text(
-        text=profile_text,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-        ]])
-    )
-    
-    return PROFILE
+        await query.answer(f"Поздравляем! Ты купил {car.name}!", show_alert=True)
+        
+        # Возвращаемся к просмотру машин
+        market_type = context.user_data.get('market_type', 'europe')
+        await show_market_cars(update, context)
+    else:
+        await query.answer("Недостаточно денег!", show_alert=True)
 
-async def racing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def parts_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    race_text = (
-        "🏎 ГОНКИ\n\n"
-        "Выберите тип гонки:\n\n"
-        "1. 🎮 Тренировка (против бота)\n"
-        "   • Награда: $500-2000\n"
-        "   • Подписчики: +10-50\n"
-        "   • Без риска\n\n"
-        "2. ⚔️ Дуэль (против игрока) - скоро!\n"
-        "   • Награда: $1000-5000\n"
-        "   • Подписчики: +50-200\n"
-        "   • Рейтинг: +-20\n\n"
-        "3. 🏆 Турнир (скоро)\n"
-        "   • Крупные награды\n"
-        "   • Уникальные машины\n"
-        "   • Повышение рейтинга"
+    shop_text = (
+        "🔧 *Магазин запчастей*\n\n"
+        "Улучшай характеристики своей машины:\n\n"
+        "🚗 *Двигатели* - увеличивают мощность\n"
+        "🌀 *Турбины* - улучшают разгон\n"
+        "🛞 *Покрышки* - лучшее сцепление\n"
+        "💨 *Выхлопы* - небольшой прирост\n"
+        "🔄 *Подвеска* - улучшает управляемость"
     )
+    
+    keyboard = get_parts_shop_keyboard()
+    
+    await query.edit_message_caption(
+        caption=shop_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard
+    )
+
+async def show_top_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    top_text = "🏆 *Топ игроков*\n\n"
+    
+    # Топ по деньгам
+    top_money = db.get_top_players_by_money(5)
+    top_text += "*💰 Самые богатые:*\n"
+    for i, (nickname, username, balance, rating, followers) in enumerate(top_money, 1):
+        top_text += f"{i}. {nickname} - {balance:,}\n"
+    
+    top_text += "\n*⭐ Топ по рейтингу:*\n"
+    top_rating = db.get_top_players_by_rating(5)
+    for i, (nickname, username, rating, wins, followers) in enumerate(top_rating, 1):
+        top_text += f"{i}. {nickname} - {rating} RP\n"
+    
+    top_text += "\n*🏆 Топ по победам:*\n"
+    top_wins = db.get_top_players_by_wins(5)
+    for i, (nickname, username, wins, rating, followers) in enumerate(top_wins, 1):
+        top_text += f"{i}. {nickname} - {wins} побед\n"
     
     keyboard = [
-        [InlineKeyboardButton("🎮 Тренировка", callback_data="training_race")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+        [InlineKeyboardButton("💰 По деньгам", callback_data="top_money"),
+         InlineKeyboardButton("⭐ По рейтингу", callback_data="top_rating")],
+        [InlineKeyboardButton("🏆 По победам", callback_data="top_wins")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
     ]
     
-    await query.edit_message_text(
-        text=race_text,
+    await query.edit_message_caption(
+        caption=top_text,
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
-    return RACING
 
-async def training_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def use_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
-    user = db.get_user(user_id)
+    user = update.effective_user
+    player = db.get_player(user.id)
     
-    if not user:
-        return await main_menu(update, context)
+    if not player:
+        return
     
-    active_car = db.get_active_car(user_id)
-    if not active_car:
-        await query.edit_message_text(
-            text="🚫 У вас нет активной машины!\n"
-                 "Активируйте машину в гараже.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚗 Гараж", callback_data="garage"),
-                InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-            ]])
-        )
-        return RACING
+    # Проверяем использовал ли уже промокод
+    db.cursor.execute('SELECT promo_used FROM players WHERE user_id = ?', (user.id,))
+    result = db.cursor.fetchone()
     
-    car_name = f"{active_car['brand']} {active_car['model']}"
-    car_hp = active_car['base_hp'] + active_car['tuning_hp']
+    if result and result[0]:
+        await query.answer("Ты уже использовал промокод!", show_alert=True)
+        return
     
-    race_info = (
-        f"🎮 ТРЕНИРОВОЧНАЯ ГОНКА\n\n"
-        f"Ваша машина: {car_name}\n"
-        f"Мощность: {car_hp} л.с.\n\n"
-        f"Дистанция: 500 метров\n"
-        f"Соперник: Бот-новичок\n"
-        f"Награда за победу: $500-2000\n\n"
-        f"Механика гонки:\n"
-        f"1. Нажмите 'ГОТОВ!'\n"
-        f"2. Через 5 секунд начнется обратный отсчет\n"
-        f"3. Нажмите 'СТАРТ!' в интервале 5-6 секунд\n"
-        f"4. Машина проедет 500 метров\n"
-        f"5. Получите награду!\n\n"
-        f"Внимание! Если нажмете раньше 5 сек - фальстарт!\n"
-        f"Если позже 6 сек - поздний старт!"
+    promo_text = (
+        "🎁 *Активация промокода*\n\n"
+        f"Текущий промокод: *{PROMO_CODE}*\n"
+        f"Награда: *{PROMO_BONUS:,}* 💰\n\n"
+        "Введи промокод в ответном сообщении:"
     )
     
-    await query.edit_message_text(
-        text=race_info,
-        reply_markup=get_race_keyboard()
+    await query.edit_message_caption(
+        caption=promo_text,
+        parse_mode=ParseMode.MARKDOWN
     )
     
-    return RACING
-
-async def top_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        text="🏆 ТОП ИГРОКОВ\n\n"
-             "Выберите категорию:",
-        reply_markup=get_top_keyboard()
-    )
-    
-    return TOP_MENU
-
-async def show_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "top_money":
-        top_name = "💰 ТОП ПО ДЕНЬГАМ"
-        top_data = db.get_top_money(10)
-    elif data == "top_rating":
-        top_name = "⭐️ ТОП ПО РЕЙТИНГУ"
-        top_data = db.get_top_rating(10)
-    elif data == "top_followers":
-        top_name = "👥 ТОП ПО ПОДПИСЧИКАМ"
-        top_data = db.get_top_followers(10)
-    else:
-        return await top_menu(update, context)
-    
-    if not top_data:
-        await query.edit_message_text(
-            text=f"🚫 {top_name} пока пуст.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="top")
-            ]])
-        )
-        return TOP_MENU
-    
-    top_text = f"{top_name}\n\n"
-    
-    for idx, item in enumerate(top_data, 1):
-        value = item.get('balance', item.get('rating', item.get('followers', 0)))
-        top_text += f"{idx}. {item['nickname']} - {value:,}\n"
-    
-    keyboard = [
-        [InlineKeyboardButton("🏆 Другие топы", callback_data="top")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
-    
-    await query.edit_message_text(
-        text=top_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return TOP_MENU
-
-async def promocode_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        text="🎁 АКТИВАЦИЯ ПРОМОКОДА\n\n"
-             "Введите промокод:\n\n"
-             "Доступные промокоды:\n"
-             "• WELCOME2024 - 5000$\n"
-             "• RACINGBOT - 3000$\n"
-             "• SPEED - 2000$\n"
-             "• FOLLOWERS - 1000$\n"
-             "• RICH - 10000$",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
-        ]])
-    )
-    
-    return PROMOCODE
-
-async def activate_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    code = update.message.text.strip().upper()
-    
-    result = db.use_promocode(user_id, code)
-    
-    if result:
-        reward_type, value = result
-        reward_text = f"💰 {value:,} денег"
-        
-        await update.message.reply_text(
-            f"✅ Промокод активирован!\n"
-            f"Вы получили: {reward_text}",
-            reply_markup=get_main_menu_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Неверный промокод или он уже использован.",
-            reply_markup=get_main_menu_keyboard()
-        )
-    
+    # Ждем ввод промокода
+    context.user_data['waiting_for_promo'] = True
     return MAIN_MENU
 
-async def market_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def process_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    promo_input = update.message.text.strip().upper()
     
-    await query.edit_message_text(
-        text="💰 РЫНОК\n\n"
-             "Выберите категорию:",
-        reply_markup=get_shop_keyboard()
-    )
+    if promo_input == PROMO_CODE:
+        player = db.get_player(user.id)
+        if player:
+            # Проверяем использовал ли уже
+            db.cursor.execute('SELECT promo_used FROM players WHERE user_id = ?', (user.id,))
+            result = db.cursor.fetchone()
+            
+            if result and not result[0]:
+                # Начисляем бонус
+                db.update_player_balance(user.id, PROMO_BONUS)
+                db.cursor.execute('UPDATE players SET promo_used = TRUE WHERE user_id = ?', (user.id,))
+                db.conn.commit()
+                
+                await update.message.reply_text(
+                    f"✅ *Промокод активирован!*\nПолучено: {PROMO_BONUS:,} 💰",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text("❌ Ты уже использовал промокод!")
+        else:
+            await update.message.reply_text("❌ Игрок не найден!")
+    else:
+        await update.message.reply_text("❌ Неверный промокод!")
     
-    return MARKET
+    context.user_data['waiting_for_promo'] = False
+    await show_main_menu(update, context)
+    return MAIN_MENU
 
-async def tuning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def duel_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
-    active_car = db.get_active_car(user_id)
+    user = update.effective_user
+    player = db.get_player(user.id)
     
-    if not active_car:
-        await query.edit_message_text(
-            text="🚫 У вас нет активной машины!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚗 Гараж", callback_data="garage"),
-                InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
-            ]])
-        )
-        return TUNING
+    if not player:
+        return
     
-    car_text = (
-        f"⚙️ ТЮНИНГ: {active_car['brand']} {active_car['model']}\n\n"
-        f"📊 Текущие характеристики:\n"
-        f"• Лошадиные силы: {active_car['base_hp']} + {active_car['tuning_hp']} = "
-        f"{active_car['base_hp'] + active_car['tuning_hp']} л.с.\n"
-        f"• Разгон 0-100: {active_car['base_acceleration_0_100']} + {active_car['tuning_acceleration']:.1f} = "
-        f"{active_car['base_acceleration_0_100'] + active_car['tuning_acceleration']:.1f} сек\n"
-        f"• Макс. скорость: {active_car['base_top_speed']} + {active_car['tuning_top_speed']} = "
-        f"{active_car['base_top_speed'] + active_car['tuning_top_speed']} км/ч\n\n"
-        f"🚧 Система тюнинга в разработке!\n"
-        f"Скоро вы сможете улучшать свою машину!"
+    # Проверяем есть ли ожидающие дуэль
+    if waiting_for_duel:
+        opponent_id = next(iter(waiting_for_duel))
+        if opponent_id != user.id:
+            # Начинаем дуэль
+            opponent_data = waiting_for_duel.pop(opponent_id)
+            await start_duel(update, context, opponent_id, opponent_data['message_id'])
+            return
+    
+    # Если нет ожидающих, становимся в очередь
+    message = await query.edit_message_caption(
+        caption="⚔️ *Поиск соперника...*\n\nИщем игрока для дуэли...",
+        parse_mode=ParseMode.MARKDOWN
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
+    waiting_for_duel[user.id] = {
+        'message_id': message.message_id,
+        'time': datetime.now()
+    }
     
-    await query.edit_message_text(
-        text=car_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # Удаляем старые ожидания (больше 60 секунд)
+    current_time = datetime.now()
+    to_remove = []
+    for opp_id, data in waiting_for_duel.items():
+        if (current_time - data['time']).seconds > 60:
+            to_remove.append(opp_id)
     
-    return TUNING
+    for opp_id in to_remove:
+        waiting_for_duel.pop(opp_id, None)
 
-async def duel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_duel(update: Update, context: ContextTypes.DEFAULT_TYPE, opponent_id: int, opponent_message_id: int):
     query = update.callback_query
-    await query.answer()
+    user = update.effective_user
+    
+    # Получаем данные игроков
+    player1 = db.get_player(user.id)
+    player2 = db.get_player(opponent_id)
+    
+    if not player1 or not player2:
+        return
+    
+    car1 = db.get_car(player1.current_car_id) if player1.current_car_id else None
+    car2 = db.get_car(player2.current_car_id) if player2.current_car_id else None
+    
+    # Рассчитываем шансы на победу
+    p1_power = car1.horsepower if car1 else 100
+    p2_power = car2.horsepower if car2 else 100
+    
+    p1_chance = p1_power / (p1_power + p2_power)
+    p2_chance = 1 - p1_chance
     
     duel_text = (
-        "⚔️ ДУЭЛИ\n\n"
-        "🚧 Система дуэлей в разработке!\n\n"
-        "Скоро вы сможете:\n"
-        "• Вызывать других игроков на дуэли\n"
-        "• Соревноваться за рейтинг\n"
-        "• Зарабатывать больше денег\n"
-        "• Получать уникальные награды\n\n"
-        "Следите за обновлениями!"
+        f"⚔️ *Дуэль найдена!*\n\n"
+        f"*{player1.nickname}* ({p1_power} л.с.)\n"
+        f"🆚\n"
+        f"*{player2.nickname}* ({p2_power} л.с.)\n\n"
+        f"Шансы на победу:\n"
+        f"👤 {player1.nickname}: {p1_chance*100:.1f}%\n"
+        f"👤 {player2.nickname}: {p2_chance*100:.1f}%\n\n"
+        f"Нажми 'Готов' когда будешь готов!"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🎮 Готов к дуэли!", callback_data="duel_ready")]]
     
-    await query.edit_message_text(
-        text=duel_text,
+    # Отправляем обоим игрокам
+    await query.edit_message_caption(
+        caption=duel_text,
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
-    return DUEL
-
-# Админ команды
-async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ У вас нет прав администратора.")
-        return
-    
-    if len(context.args) < 1:
-        await update.message.reply_text("Использование: /ban <user_id>")
-        return
-    
     try:
-        target_id = int(context.args[0])
-        cursor = db.conn.cursor()
-        cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
-        db.conn.commit()
-        
-        await update.message.reply_text(f"✅ Пользователь {target_id} забанен.")
+        await context.bot.edit_message_caption(
+            chat_id=opponent_id,
+            message_id=opponent_message_id,
+            caption=duel_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     except:
-        await update.message.reply_text("❌ Ошибка при бане пользователя.")
+        pass
+    
+    # Сохраняем данные дуэли
+    context.user_data['duel_opponent'] = opponent_id
+    context.user_data['duel_opponent_message'] = opponent_message_id
+    context.user_data['duel_started'] = False
 
-async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ У вас нет прав администратора.")
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас нет прав администратора!")
         return
     
-    if len(context.args) < 1:
-        await update.message.reply_text("Использование: /unban <user_id>")
-        return
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
+         InlineKeyboardButton("👤 Найти игрока", callback_data="admin_find")],
+        [InlineKeyboardButton("💰 Выдать деньги", callback_data="admin_give_money"),
+         InlineKeyboardButton("🎁 Выдать машину", callback_data="admin_give_car")],
+        [InlineKeyboardButton("🚫 Забанить", callback_data="admin_ban"),
+         InlineKeyboardButton("✅ Разбанить", callback_data="admin_unban")],
+        [InlineKeyboardButton("🔄 Сменить промокод", callback_data="admin_change_promo")]
+    ]
     
-    try:
-        target_id = int(context.args[0])
-        cursor = db.conn.cursor()
-        cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (target_id,))
-        db.conn.commit()
-        
-        await update.message.reply_text(f"✅ Пользователь {target_id} разбанен.")
-    except:
-        await update.message.reply_text("❌ Ошибка при разбане пользователя.")
-
-async def admin_add_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ У вас нет прав администратора.")
-        return
-    
-    if len(context.args) < 2:
-        await update.message.reply_text("Использование: /addmoney <user_id> <amount>")
-        return
-    
-    try:
-        target_id = int(context.args[0])
-        amount = int(context.args[1])
-        
-        db.update_user_balance(target_id, amount)
-        
-        await update.message.reply_text(f"✅ Пользователю {target_id} добавлено ${amount:,}.")
-    except:
-        await update.message.reply_text("❌ Ошибка при добавлении денег.")
-
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ У вас нет прав администратора.")
-        return
-    
-    cursor = db.conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) as total FROM users")
-    total_users = cursor.fetchone()["total"]
-    
-    cursor.execute("SELECT SUM(balance) as total_money FROM users")
-    total_money = cursor.fetchone()["total_money"] or 0
-    
-    cursor.execute("SELECT COUNT(*) as total_cars FROM user_cars")
-    total_cars = cursor.fetchone()["total_cars"]
-    
-    stats_text = (
-        "📊 СТАТИСТИКА БОТА\n\n"
-        f"👥 Всего пользователей: {total_users:,}\n"
-        f"💰 Общая сумма денег: ${total_money:,}\n"
-        f"🚗 Куплено машин: {total_cars:,}\n"
-        f"👑 Админов: {len(ADMINS)}"
-    )
-    
-    await update.message.reply_text(stats_text)
-
-async def admin_add_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if user_id not in ADMINS:
-        await update.message.reply_text("❌ У вас нет прав администратора.")
-        return
-    
-    if len(context.args) < 3:
-        await update.message.reply_text("Использование: /addpromo <code> <type> <value>\n"
-                                       "Типы: money, followers, rating")
-        return
-    
-    code = context.args[0].upper()
-    reward_type = context.args[1]
-    value = int(context.args[2])
-    
-    if reward_type not in ["money", "followers", "rating"]:
-        await update.message.reply_text("❌ Неверный тип награды. Используйте: money, followers, rating")
-        return
-    
-    cursor = db.conn.cursor()
-    try:
-        cursor.execute('''
-            INSERT INTO promocodes (code, reward_type, reward_value)
-            VALUES (?, ?, ?)
-        ''', (code, reward_type, value))
-        db.conn.commit()
-        
-        await update.message.reply_text(f"✅ Промокод {code} добавлен.")
-    except:
-        await update.message.reply_text("❌ Ошибка при добавлении промокода.")
-
-# Обработка неизвестных команд
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Неизвестная команда. Используйте /start для начала игры."
+        "👑 *Панель администратора*\n\nВыберите действие:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Операция отменена. Используйте /start для начала игры."
-    )
-    return ConversationHandler.END
+# ==================== ОБРАБОТЧИКИ КОЛБЭКОВ ====================
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    
+    if data == "main_menu" or data == "back_to_main":
+        await show_main_menu(update, context)
+        return MAIN_MENU
+    
+    elif data.startswith("prev_car_"):
+        index = int(data.split('_')[-1]) - 1
+        context.user_data['car_index'] = index
+        await show_car_selection(update, context)
+    
+    elif data.startswith("next_car_"):
+        index = int(data.split('_')[-1]) + 1
+        context.user_data['car_index'] = index
+        await show_car_selection(update, context)
+    
+    elif data.startswith("select_car_"):
+        await select_car(update, context)
+    
+    elif data == "start_training":
+        await start_training_race(update, context)
+    
+    elif data == "training_ready":
+        await training_ready(update, context)
+    
+    elif data == "training_start":
+        await training_start(update, context)
+    
+    elif data == "car_shop":
+        await car_shop(update, context)
+    
+    elif data.startswith("market_"):
+        if data.startswith("market_prev_") or data.startswith("market_next_"):
+            index = int(data.split('_')[-1])
+            if "prev" in data:
+                index -= 1
+            else:
+                index += 1
+            context.user_data['market_index'] = index
+            await show_market_car(update, context, index)
+        else:
+            await show_market_cars(update, context)
+    
+    elif data.startswith("buy_car_"):
+        await buy_car(update, context)
+    
+    elif data == "parts_shop":
+        await parts_shop(update, context)
+    
+    elif data == "top_players":
+        await show_top_players(update, context)
+    
+    elif data in ["top_money", "top_rating", "top_wins"]:
+        await show_top_players(update, context)  # Можно расширить для разных топов
+    
+    elif data == "use_promo":
+        await use_promo_code(update, context)
+    
+    elif data == "race_bot":
+        await start_training_race(update, context)
+    
+    elif data == "duel_search":
+        await duel_search(update, context)
+    
+    elif data == "duel_ready":
+        await training_ready(update, context)  # Используем ту же логику
+    
+    elif data == "my_garage":
+        await show_main_menu(update, context)  # Можно расширить
+    
+    elif data == "noop":
+        await query.answer()
+    
+    else:
+        await query.answer("Функция в разработке!")
 
-# Основная функция
-def main():
+# ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
+async def main():
     # Создаем приложение
-    application = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчики команд
+    # Обработчики команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ban", admin_ban))
-    application.add_handler(CommandHandler("unban", admin_unban))
-    application.add_handler(CommandHandler("addmoney", admin_add_money))
-    application.add_handler(CommandHandler("addpromo", admin_add_promo))
-    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CommandHandler("admin", admin_panel))
     
-    # Создаем ConversationHandler
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            REGISTER_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)
-            ],
-            MAIN_MENU: [
-                CallbackQueryHandler(garage, pattern="^garage$"),
-                CallbackQueryHandler(racing, pattern="^racing$"),
-                CallbackQueryHandler(shop_menu, pattern="^shop$"),
-                CallbackQueryHandler(tuning, pattern="^tuning$"),
-                CallbackQueryHandler(top_menu, pattern="^top$"),
-                CallbackQueryHandler(market_menu, pattern="^market$"),
-                CallbackQueryHandler(profile, pattern="^profile$"),
-                CallbackQueryHandler(duel_menu, pattern="^duel$"),
-                CallbackQueryHandler(promocode_menu, pattern="^promocode$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            TRAINING: [
-                CallbackQueryHandler(start_training, pattern="^start_training$"),
-                CallbackQueryHandler(skip_training, pattern="^skip_training$"),
-                CallbackQueryHandler(choose_first_car, pattern="^choose_first_car$"),
-            ],
-            CHOOSING_CAR: [
-                CallbackQueryHandler(show_car, pattern=r"^car_\d+$"),
-                CallbackQueryHandler(select_car, pattern=r"^select_car_\d+$"),
-            ],
-            RACING: [
-                CallbackQueryHandler(first_race, pattern="^first_race$"),
-                CallbackQueryHandler(training_race, pattern="^training_race$"),
-                CallbackQueryHandler(ready_to_race, pattern="^ready_to_race$"),
-                CallbackQueryHandler(race_start, pattern="^race_start$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            SHOP_MENU: [
-                CallbackQueryHandler(european_market, pattern="^european_market$"),
-                CallbackQueryHandler(asian_market, pattern="^asian_market$"),
-                CallbackQueryHandler(american_market, pattern="^american_market$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            MARKET: [
-                CallbackQueryHandler(european_market, pattern="^european_market$"),
-                CallbackQueryHandler(asian_market, pattern="^asian_market$"),
-                CallbackQueryHandler(american_market, pattern="^american_market$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            EUROPEAN_MARKET: [
-                CallbackQueryHandler(market_navigation, pattern="^market_"),
-                CallbackQueryHandler(buy_car, pattern=r"^buy_car_\d+$"),
-                CallbackQueryHandler(shop_menu, pattern="^shop$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            ASIAN_MARKET: [
-                CallbackQueryHandler(market_navigation, pattern="^market_"),
-                CallbackQueryHandler(buy_car, pattern=r"^buy_car_\d+$"),
-                CallbackQueryHandler(shop_menu, pattern="^shop$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            AMERICAN_MARKET: [
-                CallbackQueryHandler(market_navigation, pattern="^market_"),
-                CallbackQueryHandler(buy_car, pattern=r"^buy_car_\d+$"),
-                CallbackQueryHandler(shop_menu, pattern="^shop$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            GARAGE: [
-                CallbackQueryHandler(activate_car, pattern=r"^activate_car_\d+$"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-                CallbackQueryHandler(shop_menu, pattern="^shop$"),
-            ],
-            TUNING: [
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            DUEL: [
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            PROFILE: [
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            TOP_MENU: [
-                CallbackQueryHandler(show_top, pattern="^top_"),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-            PROMOCODE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, activate_promocode),
-                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
-    )
+    # Обработчики сообщений
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_promo_code))
     
-    application.add_handler(conv_handler)
+    # Обработчики колбэков
+    application.add_handler(CallbackQueryHandler(button_callback))
     
-    # Обработчик неизвестных команд
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-    
-    # Запуск бота
-    print("=" * 60)
+    # Запускаем бота
+    print("============================================================")
     print("🚗 RACING BOT ЗАПУЩЕН!")
-    print(f"👑 Администраторы: {ADMINS}")
-    print("🎁 Промокоды: WELCOME2024, RACINGBOT, SPEED, FOLLOWERS, RICH")
-    print("⚔️ Дуэли: В разработке")
-    print("💰 Экономика: Улучшенная")
-    print("🏎 Машин: 24 различных модели")
-    print("=" * 60)
+    print(f"👑 Администраторы: {ADMIN_IDS}")
+    print(f"🎁 Промокод: {PROMO_CODE} ({PROMO_BONUS} 💰)")
+    print("⚔️ Дуэли включены")
+    print("💰 Улучшенная экономика")
+    print("⚙️ Магазин запчастей, тюнинг машин")
+    print("============================================================")
     
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.run_polling()
 
 if __name__ == '__main__':
-    # Замените токен перед запуском!
-    main()
-
+    asyncio.run(main())
