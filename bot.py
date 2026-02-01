@@ -37,7 +37,7 @@ DATABASE_NAME = "racing_bot.db"
     EXHAUSTS, RADIATORS, NITROUS, SHOCK_ABSORBERS, TIRES, 
     DUEL, WAITING_DUEL, PROFILE, INSTALL_PARTS, TOP_MENU, 
     PROMOCODE, ASIAN_CARS, AMERICAN_CARS, EUROPEAN_CARS
-) = range(30)
+) = range(29)
 
 # Класс для работы с базой данных
 class Database:
@@ -1698,3 +1698,4 @@ def main():
 if __name__ == '__main__':
     # Замените токен перед запуском!
     main()
+
