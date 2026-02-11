@@ -6,19 +6,24 @@ import random
 import os
 import re
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from contextlib import closing
 
 # ======================== НАСТРОЙКИ ========================
-BOT_TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_ITw"  # Замените на реальный токен
-ADMIN_IDS = [5189651311, 5887846215]  # ID администраторов
-IMAGES_PATH = "images"  # папка с фото
+BOT_TOKEN = "7969118140:AAHu0KE7nHpm03k12tMlaLJlMt43rfG_ITw"          # ⚠️ Замените на токен вашего бота
+ADMIN_IDS = [5887846215, 5189651311]    # ⚠️ ID администраторов
+IMAGES_PATH = "images"                # папка с фотографиями
 DB_NAME = "racing_bot.db"
+
+# ======================== ИНИЦИАЛИЗАЦИЯ БОТА ========================
+bot = Bot(token=BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)      # ← Теперь dp определён до всех декораторов
 
 # ======================== БАЗА ДАННЫХ ========================
 def init_db():
@@ -36,9 +41,9 @@ def init_db():
             rating INTEGER DEFAULT 1000,
             car_model TEXT,
             car_hp INTEGER,
-            acc_100 REAL,        -- разгон до 100 км/ч (сек)
-            acc_200 REAL,        -- разгон до 200 км/ч (сек)
-            acc_300 REAL,        -- разгон до 300 км/ч (сек)
+            acc_100 REAL,
+            acc_200 REAL,
+            acc_300 REAL,
             selected_car_image TEXT,
             daily_streak INTEGER DEFAULT 0,
             last_daily DATE,
@@ -79,7 +84,7 @@ def init_db():
             acc_100_bonus REAL,
             acc_200_bonus REAL,
             acc_300_bonus REAL,
-            installed INTEGER DEFAULT 0   -- 1 - установлена на текущую машину
+            installed INTEGER DEFAULT 0
         )''')
         # Промокоды
         c.execute('''CREATE TABLE IF NOT EXISTS promocodes (
@@ -100,42 +105,19 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS boxes (
             box_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
-            box_type TEXT,       -- 'win', 'donate_light', 'donate_medium', 'donate_heavy'
+            box_type TEXT,
             opened INTEGER DEFAULT 0,
             received_at TIMESTAMP
         )''')
         conn.commit()
 
-# ======================== КОНСТАНТЫ МАШИН И ЗАПЧАСТЕЙ ========================
-# Стартовые машины (обучение)
+# ======================== КОНСТАНТЫ ========================
 STARTER_CARS = [
-    {
-        "name": "Lancer X Sportback",
-        "hp": 240,
-        "acc_100": 6.5,
-        "acc_200": 18.2,
-        "acc_300": 45.0,
-        "image": "lancer_x.jpg"
-    },
-    {
-        "name": "Opel Insignia OPC",
-        "hp": 325,
-        "acc_100": 5.8,
-        "acc_200": 16.5,
-        "acc_300": 41.0,
-        "image": "opel_insignia.jpg"
-    },
-    {
-        "name": "Cadillac CTS",
-        "hp": 304,
-        "acc_100": 6.2,
-        "acc_200": 17.3,
-        "acc_300": 43.0,
-        "image": "cadillac_cts.jpg"
-    }
+    {"name": "Lancer X Sportback", "hp": 240, "acc_100": 6.5, "acc_200": 18.2, "acc_300": 45.0, "image": "lancer_x.jpg"},
+    {"name": "Opel Insignia OPC", "hp": 325, "acc_100": 5.8, "acc_200": 16.5, "acc_300": 41.0, "image": "opel_insignia.jpg"},
+    {"name": "Cadillac CTS", "hp": 304, "acc_100": 6.2, "acc_200": 17.3, "acc_300": 43.0, "image": "cadillac_cts.jpg"}
 ]
 
-# Европейские марки и модели (базовые характеристики)
 EUROPE_CARS = {
     "Volkswagen": [
         {"name": "Golf GTI", "hp": 245, "acc_100": 6.4, "acc_200": 17.8, "acc_300": 44.0, "price": 15000, "image": "golf.jpg"},
@@ -149,7 +131,6 @@ EUROPE_CARS = {
     ]
 }
 
-# Азиатские
 ASIAN_CARS = {
     "Toyota": [
         {"name": "Corolla AE86", "hp": 130, "acc_100": 8.6, "acc_200": 24.0, "acc_300": 60.0, "price": 8000, "image": "ae86.jpg"},
@@ -159,23 +140,13 @@ ASIAN_CARS = {
     ]
 }
 
-# Американские
 US_CARS = {
-    "Ford": [
-        {"name": "F-150 Raptor", "hp": 450, "acc_100": 5.2, "acc_200": 14.5, "acc_300": 36.0, "price": 50000, "image": "f150.jpg"}
-    ],
-    "Chevrolet": [
-        {"name": "Silverado", "hp": 355, "acc_100": 6.8, "acc_200": 19.0, "acc_300": 48.0, "price": 35000, "image": "silverado.jpg"}
-    ],
-    "Ram": [
-        {"name": "1500 TRX", "hp": 702, "acc_100": 4.5, "acc_200": 12.8, "acc_300": 32.0, "price": 70000, "image": "ram1500.jpg"}
-    ],
-    "GMC": [
-        {"name": "Sierra Denali", "hp": 420, "acc_100": 5.9, "acc_200": 16.5, "acc_300": 41.0, "price": 48000, "image": "sierra.jpg"}
-    ]
+    "Ford": [{"name": "F-150 Raptor", "hp": 450, "acc_100": 5.2, "acc_200": 14.5, "acc_300": 36.0, "price": 50000, "image": "f150.jpg"}],
+    "Chevrolet": [{"name": "Silverado", "hp": 355, "acc_100": 6.8, "acc_200": 19.0, "acc_300": 48.0, "price": 35000, "image": "silverado.jpg"}],
+    "Ram": [{"name": "1500 TRX", "hp": 702, "acc_100": 4.5, "acc_200": 12.8, "acc_300": 32.0, "price": 70000, "image": "ram1500.jpg"}],
+    "GMC": [{"name": "Sierra Denali", "hp": 420, "acc_100": 5.9, "acc_200": 16.5, "acc_300": 41.0, "price": 48000, "image": "sierra.jpg"}]
 }
 
-# Запчасти
 PARTS = {
     "engine": [
         {"name": "Volkswagen EA888 (1.8T)", "hp": 30, "acc_100": -0.3, "acc_200": -0.8, "acc_300": -2.0, "price": 5000, "image": "ea888.jpg"},
@@ -194,8 +165,8 @@ PARTS = {
         {"name": "Milltek Non-Resonated", "hp": 10, "acc_100": -0.1, "acc_200": -0.2, "acc_300": -0.5, "price": 2000, "image": "milltek.jpg"}
     ],
     "radiator": [
-        {"name": "Nissens Performance", "hp": 0, "acc_100": -0.0, "acc_200": -0.1, "acc_300": -0.3, "price": 1500, "image": "nissens.jpg"},
-        {"name": "Behr Hella OEM Plus", "hp": 0, "acc_100": -0.0, "acc_200": -0.1, "acc_300": -0.2, "price": 1200, "image": "behr.jpg"}
+        {"name": "Nissens Performance", "hp": 0, "acc_100": 0.0, "acc_200": -0.1, "acc_300": -0.3, "price": 1500, "image": "nissens.jpg"},
+        {"name": "Behr Hella OEM Plus", "hp": 0, "acc_100": 0.0, "acc_200": -0.1, "acc_300": -0.2, "price": 1200, "image": "behr.jpg"}
     ],
     "nitro": [
         {"name": "NOS Sniper Kit", "hp": 75, "acc_100": -0.5, "acc_200": -1.3, "acc_300": -3.0, "price": 12000, "image": "nos_sniper.jpg"},
@@ -209,13 +180,22 @@ PARTS = {
     ]
 }
 
-# Донат-наборы (вкл. боксы)
 DONATION_PACKS = {
     "novice": {"name": "Набор новичка", "price": 50, "desc": "500 монет + бокс 'Лёгкий'", "money": 500, "box": "light"},
     "racer": {"name": "Набор гонщика", "price": 150, "desc": "1500 монет + бокс 'Средний'", "money": 1500, "box": "medium"},
     "pro": {"name": "Набор профи", "price": 300, "desc": "4000 монет + бокс 'Тяжёлый'", "money": 4000, "box": "heavy"},
     "vip": {"name": "VIP набор", "price": 600, "desc": "9000 монет + бокс 'Тяжёлый' x2", "money": 9000, "box": "heavy", "boxes": 2},
     "legend": {"name": "Набор легенды", "price": 1200, "desc": "20000 монет + бокс 'Тяжёлый' x5", "money": 20000, "box": "heavy", "boxes": 5}
+}
+
+DAILY_REWARDS = {
+    1: {"money": 100, "followers": 10},
+    2: {"money": 150, "followers": 20},
+    3: {"money": 200, "followers": 30},
+    4: {"money": 250, "followers": 40},
+    5: {"money": 300, "followers": 50},
+    6: {"money": 350, "followers": 60},
+    7: {"money": 500, "followers": 100, "box": "light"}
 }
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БД ========================
@@ -227,7 +207,7 @@ def get_user(user_id):
 
 def is_banned(user_id):
     user = get_user(user_id)
-    return user and user[15] == 1
+    return user and user[17] == 1  # is_banned индекс 17
 
 def register_user(user_id, username, nickname):
     with closing(sqlite3.connect(DB_NAME)) as conn:
@@ -238,26 +218,21 @@ def register_user(user_id, username, nickname):
             conn.commit()
             return True
         except sqlite3.IntegrityError:
-            return False  # ник занят
+            return False
 
 def update_user_car(user_id, car):
     with closing(sqlite3.connect(DB_NAME)) as conn:
         c = conn.cursor()
-        # Убираем флаг equipped у старой машины
         c.execute("UPDATE user_cars SET equipped = 0 WHERE user_id = ?", (user_id,))
-        # Добавляем новую машину
         c.execute('''INSERT INTO user_cars 
             (user_id, car_name, base_hp, base_acc_100, base_acc_200, base_acc_300, image, equipped) 
             VALUES (?, ?, ?, ?, ?, ?, ?, 1)''',
             (user_id, car['name'], car['hp'], car['acc_100'], car['acc_200'], car['acc_300'], car['image']))
-        car_id = c.lastrowid
-        # Обновляем профиль пользователя
         c.execute('''UPDATE users SET 
             car_model = ?, car_hp = ?, acc_100 = ?, acc_200 = ?, acc_300 = ?, selected_car_image = ? 
             WHERE user_id = ?''',
             (car['name'], car['hp'], car['acc_100'], car['acc_200'], car['acc_300'], car['image'], user_id))
         conn.commit()
-        return car_id
 
 def add_money(user_id, amount):
     with closing(sqlite3.connect(DB_NAME)) as conn:
@@ -285,6 +260,41 @@ def add_loss(user_id):
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
+
+def give_box(user_id, box_type):
+    with closing(sqlite3.connect(DB_NAME)) as conn:
+        c = conn.cursor()
+        c.execute("INSERT INTO boxes (user_id, box_type, received_at) VALUES (?, ?, ?)",
+                  (user_id, box_type, datetime.datetime.now().isoformat()))
+        conn.commit()
+        return c.lastrowid
+
+def open_box(user_id, box_id):
+    with closing(sqlite3.connect(DB_NAME)) as conn:
+        c = conn.cursor()
+        c.execute("SELECT box_type, opened FROM boxes WHERE box_id = ? AND user_id = ?", (box_id, user_id))
+        row = c.fetchone()
+        if not row or row[1] == 1:
+            return None, "Бокс уже открыт или не найден"
+        box_type = row[0]
+        if box_type == "win":
+            parts_pool = PARTS["exhaust"] + PARTS["radiator"] + PARTS["suspension"]
+        elif box_type == "light":
+            parts_pool = PARTS["exhaust"] + PARTS["radiator"] + PARTS["suspension"] + PARTS["turbo"][:2]
+        elif box_type == "medium":
+            parts_pool = PARTS["turbo"] + PARTS["engine"] + PARTS["nitro"][:2]
+        elif box_type == "heavy":
+            parts_pool = PARTS["engine"] + PARTS["turbo"] + PARTS["nitro"]
+        else:
+            parts_pool = list(PARTS.values())
+        part = random.choice(parts_pool)
+        c.execute('''INSERT INTO inventory 
+            (user_id, part_type, part_name, hp_bonus, acc_100_bonus, acc_200_bonus, acc_300_bonus, installed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)''',
+            (user_id, "box", part["name"], part["hp"], part["acc_100"], part["acc_200"], part["acc_300"]))
+        c.execute("UPDATE boxes SET opened = 1 WHERE box_id = ?", (box_id,))
+        conn.commit()
+        return part, "ok"
 
 # ======================== СОСТОЯНИЯ FSM ========================
 class Registration(StatesGroup):
@@ -335,7 +345,7 @@ def cancel_kb():
     kb.button(text="❌ Отмена", callback_data="cancel")
     return kb.as_markup()
 
-# ======================== ОСНОВНОЙ ХЕНДЛЕР СТАРТ ========================
+# ======================== СТАРТ И РЕГИСТРАЦИЯ ========================
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -373,6 +383,13 @@ async def process_nickname(message: Message, state: FSMContext):
     else:
         await message.answer("Этот никнейм уже занят. Выбери другой:")
 
+@dp.callback_query(F.data == "skip_training")
+async def skip_training(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer("Хорошо, можешь вернуться к обучению позже через профиль.",
+                                  reply_markup=main_menu_keyboard())
+
 # ======================== ОБУЧЕНИЕ ========================
 @dp.callback_query(F.data == "start_training")
 async def start_training(callback: CallbackQuery, state: FSMContext):
@@ -395,9 +412,9 @@ async def show_car(message: Message, state: FSMContext):
     kb.adjust(1,2)
     caption = (f"🚗 *{car['name']}*\n"
                f"🏎 Л.с.: {car['hp']}\n"
-               f"⚡ 0-100: {car['acc_100']}c\n"
-               f"⚡ 0-200: {car['acc_200']}c\n"
-               f"⚡ 0-300: {car['acc_300']}c")
+               f"⚡ 0-100: {car['acc_100']}с\n"
+               f"⚡ 0-200: {car['acc_200']}с\n"
+               f"⚡ 0-300: {car['acc_300']}с")
     photo_path = os.path.join(IMAGES_PATH, car['image'])
     if os.path.exists(photo_path):
         await message.answer_photo(
@@ -445,12 +462,12 @@ async def choose_car(callback: CallbackQuery, state: FSMContext):
         ])
     )
 
-# ======================== МЕХАНИКА ГОНОК ========================
+# ======================== ГОНКИ (ОБУЧЕНИЕ / БЫСТРАЯ) ========================
 @dp.callback_query(F.data == "training_race")
 async def training_race_prepare(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user = get_user(callback.from_user.id)
-    if not user or not user[8]:  # нет машины
+    if not user or not user[8]:
         await callback.message.answer("Сначала выбери машину в гараже!")
         return
     await state.set_state(Training.race_ready)
@@ -506,11 +523,9 @@ async def race_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(result_text)
     await asyncio.sleep(1.5)
     if win:
-        # Учитываем характеристики машины
         user = get_user(user_id)
-        acc_100 = user[9]  # разгон до 100
-        # Время на дистанции 500м - упрощённый расчёт
-        time_on_track = 10 + (acc_100 * 0.5)  # чем хуже разгон, тем дольше
+        acc_100 = user[10]
+        time_on_track = 10 + (acc_100 * 0.5)
         await callback.message.answer(
             f"🚀 Ты проехал 500 м за {time_on_track:.1f} сек и победил!\n"
             f"💰 +500 монет\n📈 +{random.randint(50,100)} подписчиков"
@@ -518,53 +533,14 @@ async def race_start(callback: CallbackQuery, state: FSMContext):
         add_money(user_id, 500)
         add_followers(user_id, random.randint(50,100))
         add_win(user_id)
-        # Шанс на бокс (20%)
         if random.random() < 0.2:
-            box_id = give_box(user_id, "win")
-            await callback.message.answer("🎁 Ты получил бокс за победу! Загляни в инвентарь.")
+            give_box(user_id, "win")
+            await callback.message.answer("🎁 Ты получил бокс за победу!")
     else:
         await callback.message.answer("💥 Попробуй ещё раз!")
     await state.clear()
 
-# ======================== СИСТЕМА БОКСОВ ========================
-def give_box(user_id, box_type):
-    with closing(sqlite3.connect(DB_NAME)) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO boxes (user_id, box_type, received_at) VALUES (?, ?, ?)",
-                  (user_id, box_type, datetime.datetime.now().isoformat()))
-        conn.commit()
-        return c.lastrowid
-
-def open_box(user_id, box_id):
-    with closing(sqlite3.connect(DB_NAME)) as conn:
-        c = conn.cursor()
-        c.execute("SELECT box_type, opened FROM boxes WHERE box_id = ? AND user_id = ?", (box_id, user_id))
-        row = c.fetchone()
-        if not row or row[1] == 1:
-            return None, "Бокс уже открыт или не найден"
-        box_type = row[0]
-        # Определяем пул запчастей в зависимости от типа бокса
-        if box_type == "win":
-            parts_pool = PARTS["exhaust"] + PARTS["radiator"] + PARTS["suspension"]
-        elif box_type == "light":
-            parts_pool = PARTS["exhaust"] + PARTS["radiator"] + PARTS["suspension"] + PARTS["turbo"][:2]
-        elif box_type == "medium":
-            parts_pool = PARTS["turbo"] + PARTS["engine"] + PARTS["nitro"][:2]
-        elif box_type == "heavy":
-            parts_pool = PARTS["engine"] + PARTS["turbo"] + PARTS["nitro"]
-        else:
-            parts_pool = list(PARTS.values())  # все
-        part = random.choice(parts_pool)
-        # Добавляем в инвентарь
-        c.execute('''INSERT INTO inventory 
-            (user_id, part_type, part_name, hp_bonus, acc_100_bonus, acc_200_bonus, acc_300_bonus, installed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)''',
-            (user_id, "box", part["name"], part["hp"], part["acc_100"], part["acc_200"], part["acc_300"]))
-        # Помечаем бокс открытым
-        c.execute("UPDATE boxes SET opened = 1 WHERE box_id = ?", (box_id,))
-        conn.commit()
-        return part, "ok"
-
+# ======================== БОКСЫ ========================
 @dp.message(F.text == "🎁 Мои боксы")
 async def my_boxes(message: Message):
     user_id = message.from_user.id
@@ -596,13 +572,13 @@ async def open_box_callback(callback: CallbackQuery):
         await callback.message.edit_text(
             f"🎉 Ты открыл бокс и получил:\n"
             f"🔧 {part['name']}\n"
-            f"+{part['hp']} л.с., разгон: {part['acc_100']}с (0-100) и т.д.\n"
+            f"+{part['hp']} л.с., разгон: {part['acc_100']}с (0-100)\n"
             f"Запчасть добавлена в инвентарь."
         )
     else:
         await callback.message.edit_text(f"❌ {msg}")
 
-# ======================== МАГАЗИН ЗАПЧАСТЕЙ ========================
+# ======================== МАГАЗИН МАШИН ========================
 @dp.message(F.text == "🛒 Магазин")
 async def shop_main(message: Message):
     kb = InlineKeyboardBuilder()
@@ -616,7 +592,7 @@ async def shop_main(message: Message):
 
 @dp.callback_query(F.data.startswith("shop_cars_"))
 async def shop_cars_region(callback: CallbackQuery, state: FSMContext):
-    region = callback.data.split("_")[2]  # europe, asia, usa
+    region = callback.data.split("_")[2]
     if region == "europe":
         brands = EUROPE_CARS
     elif region == "asia":
@@ -656,9 +632,9 @@ async def show_car_model(message: Message, state: FSMContext):
     kb.adjust(1,2,1)
     caption = (f"🚗 *{car['name']}*\n"
                f"🏎 Л.с.: {car['hp']}\n"
-               f"⚡ 0-100: {car['acc_100']}c\n"
-               f"⚡ 0-200: {car['acc_200']}c\n"
-               f"⚡ 0-300: {car['acc_300']}c\n"
+               f"⚡ 0-100: {car['acc_100']}с\n"
+               f"⚡ 0-200: {car['acc_200']}с\n"
+               f"⚡ 0-300: {car['acc_300']}с\n"
                f"💰 Цена: {car['price']} монет")
     photo_path = os.path.join(IMAGES_PATH, car['image'])
     if os.path.exists(photo_path):
@@ -803,7 +779,6 @@ async def buy_part(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("❌ Недостаточно средств!")
         return
     add_money(user_id, -part['price'])
-    # Добавляем в инвентарь
     with closing(sqlite3.connect(DB_NAME)) as conn:
         c = conn.cursor()
         c.execute('''INSERT INTO inventory 
@@ -813,7 +788,6 @@ async def buy_part(callback: CallbackQuery, state: FSMContext):
         conn.commit()
     await callback.message.answer(f"✅ Ты купил {part['name']}! Запчасть в инвентаре.")
     await callback.message.delete()
-    # Не выходим из состояния, можно продолжить покупки
     await show_part(callback.message, state)
 
 @dp.callback_query(F.data == "back_to_parts_cat")
@@ -821,7 +795,7 @@ async def back_to_parts_cat(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Shop.parts_category)
     await shop_parts_categories(callback, state)
 
-# ======================== ИНВЕНТАРЬ И УСТАНОВКА ========================
+# ======================== ГАРАЖ И УСТАНОВКА ЗАПЧАСТЕЙ ========================
 @dp.message(F.text == "🚗 Мой гараж")
 async def garage(message: Message):
     user_id = message.from_user.id
@@ -834,7 +808,7 @@ async def garage(message: Message):
     text = "🚗 Твои машины:\n"
     kb = InlineKeyboardBuilder()
     for car in cars:
-        equipped = "✅" if car[7] == 1 else ""
+        equipped = "✅" if car[8] == 1 else ""
         text += f"{equipped} {car[2]} (HP: {car[3]})\n"
     text += "\n🔧 Запчасти в инвентаре:\n"
     for part in parts:
@@ -849,36 +823,29 @@ async def install_part(callback: CallbackQuery):
     user_id = callback.from_user.id
     with closing(sqlite3.connect(DB_NAME)) as conn:
         c = conn.cursor()
-        # Получаем запчасть
         c.execute("SELECT * FROM inventory WHERE id = ? AND user_id = ?", (part_id, user_id))
         part = c.fetchone()
         if not part:
             await callback.answer("Запчасть не найдена")
             return
-        if part[7] == 1:
+        if part[8] == 1:  # installed
             await callback.answer("Уже установлена")
             return
-        # Получаем текущую машину
         c.execute("SELECT id, base_hp, base_acc_100, base_acc_200, base_acc_300 FROM user_cars WHERE user_id = ? AND equipped = 1", (user_id,))
         car = c.fetchone()
         if not car:
             await callback.answer("У тебя нет экипированной машины")
             return
         car_id = car[0]
-        # Проверяем, не установлена ли уже такая же запчасть (по типу)
         c.execute("SELECT * FROM upgrades WHERE user_id = ? AND car_id = ? AND part_type = ?", (user_id, car_id, part[2]))
-        existing = c.fetchone()
-        if existing:
+        if c.fetchone():
             await callback.answer("Уже установлена запчасть этого типа")
             return
-        # Добавляем в upgrades
         c.execute('''INSERT INTO upgrades 
             (user_id, car_id, part_type, part_name, hp_bonus, acc_100_bonus, acc_200_bonus, acc_300_bonus)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (user_id, car_id, part[2], part[3], part[4], part[5], part[6], part[7]))
-        # Помечаем запчасть как установленную
         c.execute("UPDATE inventory SET installed = 1 WHERE id = ?", (part_id,))
-        # Пересчитываем характеристики машины
         c.execute("SELECT SUM(hp_bonus), SUM(acc_100_bonus), SUM(acc_200_bonus), SUM(acc_300_bonus) FROM upgrades WHERE user_id = ? AND car_id = ?",
                   (user_id, car_id))
         sums = c.fetchone()
@@ -886,7 +853,6 @@ async def install_part(callback: CallbackQuery):
         total_acc_100 = car[2] + (sums[1] or 0)
         total_acc_200 = car[3] + (sums[2] or 0)
         total_acc_300 = car[4] + (sums[3] or 0)
-        # Обновляем профиль пользователя
         c.execute("UPDATE users SET car_hp = ?, acc_100 = ?, acc_200 = ?, acc_300 = ? WHERE user_id = ?",
                   (total_hp, total_acc_100, total_acc_200, total_acc_300, user_id))
         conn.commit()
@@ -957,8 +923,7 @@ async def race_menu(message: Message):
 
 @dp.callback_query(F.data == "quick_race")
 async def quick_race(callback: CallbackQuery, state: FSMContext):
-    # Аналогично тренировочной гонке, но с наградой
-    await training_race_prepare(callback, state)  # переиспользуем
+    await training_race_prepare(callback, state)
 
 @dp.callback_query(F.data == "duel_challenge")
 async def duel_challenge(callback: CallbackQuery, state: FSMContext):
@@ -992,7 +957,6 @@ async def duel_enter_opponent(message: Message, state: FSMContext):
     if is_banned(opponent_id):
         await message.answer("Этот пользователь забанен.")
         return
-    # Проверяем, есть ли уже активный вызов
     with closing(sqlite3.connect(DB_NAME)) as conn:
         c = conn.cursor()
         c.execute("SELECT duel_id FROM duels WHERE challenger_id = ? AND opponent_id = ? AND status = 'pending' AND expires_at > ?",
@@ -1000,7 +964,6 @@ async def duel_enter_opponent(message: Message, state: FSMContext):
         if c.fetchone():
             await message.answer("Уже есть активный вызов этому игроку.")
             return
-    # Создаём вызов
     created = datetime.datetime.now()
     expires = created + datetime.timedelta(minutes=5)
     with closing(sqlite3.connect(DB_NAME)) as conn:
@@ -1042,17 +1005,13 @@ async def accept_duel(callback: CallbackQuery, state: FSMContext):
             c.execute("UPDATE duels SET status = 'expired' WHERE duel_id = ?", (duel_id,))
             conn.commit()
             return
-        # Обновляем статус
         c.execute("UPDATE duels SET status = 'accepted' WHERE duel_id = ?", (duel_id,))
         conn.commit()
     await callback.answer()
     await callback.message.edit_text("Дуэль принята! Готовься к гонке.")
-    # Запускаем гонку для обоих игроков (поочередно или одновременно)
-    # Упрощённо: начинаем гонку для принявшего, затем сообщим вызывающему
     await start_duel_race(callback.from_user.id, duel[0], state)
 
 async def start_duel_race(player1_id, player2_id, state: FSMContext):
-    # Отправляем обоим сообщение о гонке
     for uid in [player1_id, player2_id]:
         try:
             await bot.send_message(
@@ -1065,8 +1024,6 @@ async def start_duel_race(player1_id, player2_id, state: FSMContext):
             )
         except:
             pass
-    # Сохраняем состояние дуэли в FSM? Можно через глобальный словарь, но упростим: в callback_data передаём id.
-    # Будем использовать отдельный хендлер duel_ready
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("duel_ready_"))
 async def duel_ready(callback: CallbackQuery, state: FSMContext):
@@ -1078,7 +1035,6 @@ async def duel_ready(callback: CallbackQuery, state: FSMContext):
     if user_id not in (p1, p2):
         await callback.answer("Это не твоя дуэль")
         return
-    # Устанавливаем состояние гонки для этого игрока
     await state.set_state(Duel.race_ready)
     ready_time = datetime.datetime.now()
     await state.update_data(ready_time=ready_time.timestamp(), duel_players=(p1, p2))
@@ -1089,6 +1045,7 @@ async def duel_ready(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🏎 СТАРТ", callback_data=f"duel_start_{p1}_{p2}")]
         ])
     )
+    await state.set_state(Duel.race_start_wait)  # переводим в состояние ожидания старта
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("duel_start_"), Duel.race_start_wait)
 async def duel_start(callback: CallbackQuery, state: FSMContext):
@@ -1114,19 +1071,12 @@ async def duel_start(callback: CallbackQuery, state: FSMContext):
         result = "опоздание"
         win = False
     await callback.message.edit_text(f"Твой старт: {result}")
-    # Сохраняем результат в состоянии или временном хранилище
-    # Упрощённо: считаем, что оба игрока должны нажать; если один проиграл старт — он проигрывает дуэль.
-    # Отправляем результат оппоненту
-    try:
-        await bot.send_message(opponent_id, f"Твой соперник стартовал с {result}. Ожидай результатов.")
-    except:
-        pass
-    # Здесь нужна логика сравнения стартов обоих игроков. Упростим: если оба успели в окно — сравниваем время реакции.
-    # Пока оставим так: после первого старта ждём второй, затем определяем победителя.
-    # Для демо просто начислим рейтинг.
-    # В реальном проекте нужно хранить промежуточные результаты.
-    await state.clear()
-    # Просто имитация: если игрок успел — он победил
+    # Обновляем статус дуэли
+    with closing(sqlite3.connect(DB_NAME)) as conn:
+        c = conn.cursor()
+        c.execute("UPDATE duels SET status = 'finished' WHERE (challenger_id = ? AND opponent_id = ?) OR (challenger_id = ? AND opponent_id = ?)",
+                  (p1, p2, p2, p1))
+        conn.commit()
     if win:
         add_win(user_id)
         add_loss(opponent_id)
@@ -1143,6 +1093,7 @@ async def duel_start(callback: CallbackQuery, state: FSMContext):
             await bot.send_message(opponent_id, "🏆 Ты выиграл дуэль! +1 рейтинг")
         except:
             pass
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("decline_duel_"))
 async def decline_duel(callback: CallbackQuery):
@@ -1155,16 +1106,6 @@ async def decline_duel(callback: CallbackQuery):
     await callback.message.edit_text("❌ Вызов отклонён.")
 
 # ======================== ЕЖЕДНЕВНАЯ НАГРАДА ========================
-DAILY_REWARDS = {
-    1: {"money": 100, "followers": 10},
-    2: {"money": 150, "followers": 20},
-    3: {"money": 200, "followers": 30},
-    4: {"money": 250, "followers": 40},
-    5: {"money": 300, "followers": 50},
-    6: {"money": 350, "followers": 60},
-    7: {"money": 500, "followers": 100, "box": "light"}
-}
-
 @dp.message(F.text == "🎁 Ежедневная награда")
 async def daily_reward(message: Message):
     user_id = message.from_user.id
@@ -1244,7 +1185,8 @@ async def use_promo(message: Message):
     with closing(sqlite3.connect(DB_NAME)) as conn:
         c = conn.cursor()
         c.execute("SELECT promo_used FROM users WHERE user_id = ?", (user_id,))
-        if c.fetchone()[8] == 1:
+        user_data = c.fetchone()
+        if user_data and user_data[0] == 1:
             await message.answer("Ты уже использовал промокод.")
             return
         c.execute("SELECT reward, uses_left FROM promocodes WHERE code = ?", (code,))
@@ -1253,25 +1195,24 @@ async def use_promo(message: Message):
             await message.answer("Недействительный промокод.")
             return
         reward_str = row[0]
-        # Парсим
         parts_reward = reward_str.split()
         for part in parts_reward:
             if "=" in part:
                 key, val = part.split("=")
-                val = int(val) if val.isdigit() else val
                 if key == "money":
-                    add_money(user_id, val)
+                    add_money(user_id, int(val))
                 elif key == "followers":
-                    add_followers(user_id, val)
+                    add_followers(user_id, int(val))
                 elif key == "box":
-                    for _ in range(val if isinstance(val, int) else 1):
-                        give_box(user_id, val)
+                    count = int(val) if val.isdigit() else 1
+                    for _ in range(count):
+                        give_box(user_id, val if isinstance(val, str) else "light")
         c.execute("UPDATE promocodes SET uses_left = uses_left - 1 WHERE code = ?", (code,))
         c.execute("UPDATE users SET promo_used = 1 WHERE user_id = ?", (user_id,))
         conn.commit()
     await message.answer("✅ Промокод активирован!")
 
-# ======================== АДМИНКА: БАН, ВЫДАЧА ========================
+# ======================== АДМИНКА: БАН / ВЫДАЧА ========================
 @dp.message(Command("ban"))
 async def ban_user(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -1356,7 +1297,7 @@ async def process_give_box(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Выдача завершена.")
 
-# ======================== ДОНАТ (ИМИТАЦИЯ) ========================
+# ======================== ДОНАТ ========================
 @dp.message(F.text == "📦 Донат")
 async def donation_menu(message: Message):
     kb = InlineKeyboardBuilder()
@@ -1370,7 +1311,7 @@ async def donate_pack_info(callback: CallbackQuery):
     pack_id = callback.data.split("_")[1]
     pack = DONATION_PACKS[pack_id]
     text = f"*{pack['name']}*\n{pack['desc']}\nЦена: {pack['price']} руб.\n\n"
-    text += "💳 Для оплаты свяжитесь с @ADMIN_USERNAME (замените на реальный контакт).\n"
+    text += "💳 Для оплаты свяжитесь с @ADMIN_USERNAME.\n"
     text += "После подтверждения админ выдаст набор."
     await callback.message.edit_text(text, parse_mode="Markdown")
 
@@ -1381,11 +1322,12 @@ async def profile(message: Message):
     if not user:
         await message.answer("Сначала зарегистрируйся через /start")
         return
-    nickname, money, followers, wins, losses, rating, car_model = user[2], user[3], user[4], user[5], user[6], user[7], user[8]
-    car_hp = user[8] or 0
-    acc_100 = user[9] or 0
-    acc_200 = user[10] or 0
-    acc_300 = user[11] or 0
+    nickname, money, followers, wins, losses, rating = user[2], user[3], user[4], user[5], user[6], user[7]
+    car_model = user[8] or "нет"
+    car_hp = user[9] or 0
+    acc_100 = user[10] or 0
+    acc_200 = user[11] or 0
+    acc_300 = user[12] or 0
     text = (
         f"👤 *Никнейм:* {nickname}\n"
         f"💰 *Деньги:* {money}\n"
@@ -1393,7 +1335,7 @@ async def profile(message: Message):
         f"🏁 *Победы:* {wins}\n"
         f"💔 *Поражения:* {losses}\n"
         f"🏆 *Рейтинг:* {rating}\n"
-        f"🚗 *Текущая машина:* {car_model or 'нет'}\n"
+        f"🚗 *Текущая машина:* {car_model}\n"
         f"🏎 *Л.с.:* {car_hp}\n"
         f"⚡ *0-100:* {acc_100}с\n"
         f"⚡ *0-200:* {acc_200}с\n"
@@ -1401,7 +1343,7 @@ async def profile(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-# ======================== ОБРАБОТКА ОШИБОК ========================
+# ======================== ОБРАБОТКА ОШИБОК И ОТМЕН ========================
 @dp.errors()
 async def errors_handler(update: types.Update, exception: Exception):
     logging.exception("Произошла ошибка: %s", exception)
